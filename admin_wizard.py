@@ -601,9 +601,17 @@ async def edit_choose_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(f"✅ تم {'إخفاء' if field=='hide' else 'إظهار'} الخدمة")
         return ConversationHandler.END
 
+    # تحويل اسم الحقل القصير للاسم الحقيقي في قاعدة البيانات
+    field_map = {
+        "name_ar":  "name_ar",
+        "name_en":  "name_en",
+        "desc_ar":  "description_ar",
+        "category": "category"
+    }
+    field = field_map.get(field, field)
     context.user_data["wizard"]["field"] = field
     labels = {"name_ar": "الاسم العربي", "name_en": "الاسم الإنجليزي",
-              "desc_ar": "الوصف العربي", "category": "التصنيف"}
+              "description_ar": "الوصف العربي", "category": "التصنيف"}
     await q.edit_message_text(
         f"✏️ أرسل *{labels.get(field, field)}* الجديد:",
         parse_mode="Markdown", reply_markup=cancel_kb()
