@@ -8,12 +8,12 @@ class Config:
     # ——— بيانات البوت ———
     BOT_TOKEN = os.getenv("BOT_TOKEN", "")      # يُقرأ من Railway Variables
 
-    ADMIN_IDS = [123456789]                      # ← غيّر هذا لمعرفك من @userinfobot
+    ADMIN_IDS = [565781136]                      # ← غيّر هذا لمعرفك من @userinfobot
 
     # ——— عنوان USDT للدفع ———
-    USDT_ADDRESS = "YOUR_USDT_TRC20_ADDRESS_HERE"   # ← ضع عنوان محفظتك هنا
-    USDT_NETWORK = "TRC20"
+    USDT_ADDRESS = "0xd29c0f1d945a650b0c8158396682c56f586af13e"   # ← ضع عنوان محفظتك هنا
+    USDT_NETWORK = "Beb20"
 
     # ——— إعدادات عامة ———
-    SUPPORT_USERNAME = "@YourSupportUsername"
-    BOT_NAME = "🛍️ متجر الخدمات الرقمية"
+    SUPPORT_USERNAME = "@@ARTIZILLO"
+    BOT_NAME = "Nova Plus"
