@@ -724,13 +724,15 @@ async def cmd_support_shortcut(update: Update, context: ContextTypes.DEFAULT_TYP
 
 
 def register_handlers(app: Application):
-    # أوامر
+    # ——— Wizards الأدمن أولاً (أولوية عالية) ———
+    _register_wizards(app)
+
+    # أوامر المستخدم
     app.add_handler(CommandHandler("start",     cmd_start))
     app.add_handler(CommandHandler("services",  cmd_services_shortcut))
     app.add_handler(CommandHandler("mysubs",    cmd_mysubs_shortcut))
     app.add_handler(CommandHandler("profile",   cmd_profile_shortcut))
     app.add_handler(CommandHandler("support",   cmd_support_shortcut))
-    app.add_handler(CommandHandler("admin",     cmd_admin))
     app.add_handler(CommandHandler("reply",     cmd_reply))
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
 
@@ -758,4 +760,14 @@ def register_handlers(app: Application):
         (filters.PHOTO | filters.Document.ALL | filters.TEXT) & ~filters.COMMAND,
         handle_incoming
     ))
+
+
+# ——— استيراد وتسجيل الـ Wizards ———
+from admin_wizard import get_wizard_handlers, cmd_admin as wizard_cmd_admin, cb_list_services
+
+def _register_wizards(app: Application):
+    for handler in get_wizard_handlers():
+        app.add_handler(handler)
+    app.add_handler(CommandHandler("admin", wizard_cmd_admin))
+    app.add_handler(CallbackQueryHandler(cb_list_services, pattern="^admin_list_svc$"))
 
