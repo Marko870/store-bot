@@ -53,6 +53,7 @@ class Database:
                     name_en       TEXT NOT NULL,
                     duration_days INTEGER NOT NULL,
                     price         REAL NOT NULL,
+                    extra_options TEXT DEFAULT '[]',
                     features      TEXT DEFAULT '[]',
                     is_active     INTEGER DEFAULT 1
                 );
@@ -279,4 +280,42 @@ class Database:
                 "pending_orders":c.execute("SELECT COUNT(*) FROM orders WHERE status='awaiting_approval'").fetchone()[0],
                 "open_tickets":  c.execute("SELECT COUNT(*) FROM tickets WHERE status='open'").fetchone()[0],
             }
+
+    # ——— دوال إضافية للأدمن Wizard ———
+
+    def add_plan_full(self, svc_id, name_ar, name_en, days, price, features=None, options=None):
+        import json
+        with self.conn() as c:
+            c.execute("""INSERT INTO plans (service_id,name_ar,name_en,duration_days,price,features,extra_options)
+                         VALUES (?,?,?,?,?,?,?)""",
+                      (svc_id, name_ar, name_en, days, price,
+                       json.dumps(features or []),
+                       json.dumps(options or [])))
+
+    def toggle_service(self, svc_id, active: int):
+        with self.conn() as c:
+            c.execute("UPDATE services SET is_active=? WHERE id=?", (active, svc_id))
+
+    def update_service_field(self, svc_id, field, value):
+        allowed = {"name_ar", "name_en", "description_ar", "description_en", "category"}
+        if field not in allowed:
+            return
+        with self.conn() as c:
+            c.execute(f"UPDATE services SET {field}=? WHERE id=?", (value, svc_id))
+
+    def delete_service(self, svc_id):
+        with self.conn() as c:
+            c.execute("UPDATE services SET is_active=0 WHERE id=?", (svc_id,))
+
+    def delete_plan(self, plan_id):
+        with self.conn() as c:
+            c.execute("UPDATE plans SET is_active=0 WHERE id=?", (plan_id,))
+
+    def get_plan_options(self, plan_id):
+        import json
+        with self.conn() as c:
+            r = c.execute("SELECT extra_options FROM plans WHERE id=?", (plan_id,)).fetchone()
+            if r:
+                return json.loads(r[0] or "[]")
+            return []
 
