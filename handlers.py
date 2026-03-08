@@ -648,9 +648,88 @@ async def handle_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #           تسجيل جميع الـ Handlers
 # ═══════════════════════════════════════════
 
+async def cmd_services_shortcut(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """اختصار /services"""
+    context.user_data.clear()
+    user = update.effective_user
+    db.ensure_user(user.id, user.username or "", user.full_name)
+    lang = get_lang(user.id)
+    services = db.get_services()
+    if not services:
+        await update.message.reply_text(t("no_services", lang)); return
+    EMOJI = {"streaming": "🎬", "security": "🔒", "bot": "🤖", "digital": "💻"}
+    btns = [[InlineKeyboardButton(
+        f"{EMOJI.get(s['category'],'⭐')} {s['name_ar'] if lang=='ar' else s['name_en']}",
+        callback_data=f"svc_{s['id']}")] for s in services]
+    btns.append([InlineKeyboardButton(t("back", lang), callback_data="main_menu")])
+    await update.message.reply_text(t("services_title", lang), parse_mode="Markdown",
+                                     reply_markup=InlineKeyboardMarkup(btns))
+
+async def cmd_mysubs_shortcut(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """اختصار /mysubs"""
+    user = update.effective_user
+    db.ensure_user(user.id, user.username or "", user.full_name)
+    lang = get_lang(user.id)
+    subs = db.get_all_subscriptions(user.id)
+    if not subs:
+        await update.message.reply_text(t("no_subscriptions", lang),
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🛒 الخدمات | Services", callback_data="services")],
+                [InlineKeyboardButton(t("back", lang), callback_data="main_menu")]
+            ])); return
+    STATUS = {"active": "✅ نشط", "expired": "❌ منتهي"}
+    lines = [t("my_subscriptions", lang) + "\n"]
+    for sub in subs[:5]:
+        creds = json.loads(sub.get("credentials", "{}"))
+        creds_text = "".join(f"🔑 {k}: `{v}`\n" for k, v in creds.items())
+        lines.append(
+            f"━━━━━━━━━━━━\n"
+            f"🔵 {sub['service_ar']} — {sub['plan_name']}\n"
+            f"📅 {'ينتهي' if lang=='ar' else 'Expires'}: {fmt_date(sub['expires_at'])}\n"
+            f"📊 {STATUS.get(sub['status'], sub['status'])}\n"
+            f"{creds_text}"
+        )
+    await update.message.reply_text("\n".join(lines), parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("back", lang), callback_data="main_menu")]]))
+
+async def cmd_profile_shortcut(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """اختصار /profile"""
+    user = update.effective_user
+    db.ensure_user(user.id, user.username or "", user.full_name)
+    lang = get_lang(user.id)
+    u   = db.get_user(user.id)
+    sub = db.get_active_subscription(user.id)
+    sub_status = "—"
+    if sub:
+        sn = sub["plan_name"] if lang=="ar" else sub["plan_name_en"]
+        sub_status = f"{sn} ⟶ {fmt_date(sub['expires_at'])}"
+    await update.message.reply_text(
+        t("profile", lang, uid=user.id, name=u["full_name"],
+          username=u["username"] or "—", joined=fmt_date(u["joined_at"]),
+          sub_status=sub_status),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("back", lang), callback_data="main_menu")]])
+    )
+
+async def cmd_support_shortcut(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """اختصار /support"""
+    user = update.effective_user
+    db.ensure_user(user.id, user.username or "", user.full_name)
+    lang = get_lang(user.id)
+    context.user_data[AWAITING_SUPPORT] = True
+    await update.message.reply_text(
+        t("support_prompt", lang), parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("cancel", lang), callback_data="main_menu")]])
+    )
+
+
 def register_handlers(app: Application):
     # أوامر
     app.add_handler(CommandHandler("start",     cmd_start))
+    app.add_handler(CommandHandler("services",  cmd_services_shortcut))
+    app.add_handler(CommandHandler("mysubs",    cmd_mysubs_shortcut))
+    app.add_handler(CommandHandler("profile",   cmd_profile_shortcut))
+    app.add_handler(CommandHandler("support",   cmd_support_shortcut))
     app.add_handler(CommandHandler("admin",     cmd_admin))
     app.add_handler(CommandHandler("reply",     cmd_reply))
     app.add_handler(CommandHandler("broadcast", cmd_broadcast))
