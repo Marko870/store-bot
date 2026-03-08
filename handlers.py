@@ -163,13 +163,76 @@ async def cb_plan_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
              service=svc_name, plan=plan_name,
              days=plan["duration_days"], price=plan["price"],
              features=feats_text)
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(
-            "💳 اشترِ الآن | Buy Now",
-            callback_data=f"checkout_{plan_id}")],
-        [InlineKeyboardButton(t("back", lang), callback_data=f"svc_{plan['service_id']}")]
-    ])
-    await q.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
+
+    # ——— تحقق من وجود خيارات للخطة ———
+    options = db.get_plan_options(plan_id)
+    if options:
+        # إذا في خيارات — احفظ plan_id وابدأ بأول سؤال
+        context.user_data["plan_options"] = {
+            "plan_id": plan_id,
+            "options": options,
+            "current": 0,
+            "answers": {}
+        }
+        # بناء أزرار أول سؤال
+        first = options[0]
+        btns = [[InlineKeyboardButton(c, callback_data=f"opt_0_{i}")] for i, c in enumerate(first["choices"])]
+        btns.append([InlineKeyboardButton(t("back", lang), callback_data=f"svc_{plan['service_id']}")])
+        await q.edit_message_text(
+            text + f"\n\n━━━━━━━━━━━━━━━━\n🔘 *{first['question']}*",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(btns)
+        )
+    else:
+        # لا يوجد خيارات — اذهب للدفع مباشرة
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💳 اشترِ الآن | Buy Now", callback_data=f"checkout_{plan_id}")],
+            [InlineKeyboardButton(t("back", lang), callback_data=f"svc_{plan['service_id']}")]
+        ])
+        await q.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
+
+
+async def cb_plan_option(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """المستخدم يختار من خيارات الخطة"""
+    q = update.callback_query; await q.answer()
+    lang = get_lang(q.from_user.id)
+    # opt_<question_index>_<choice_index>
+    parts  = q.data.split("_")
+    q_idx  = int(parts[1])
+    c_idx  = int(parts[2])
+
+    po = context.user_data.get("plan_options")
+    if not po:
+        await q.answer("❌ انتهت الجلسة، أعد المحاولة", show_alert=True); return
+
+    options  = po["options"]
+    plan_id  = po["plan_id"]
+    question = options[q_idx]["question"]
+    choice   = options[q_idx]["choices"][c_idx]
+    po["answers"][question] = choice
+
+    next_idx = q_idx + 1
+    if next_idx < len(options):
+        # سؤال تالي
+        po["current"] = next_idx
+        nxt  = options[next_idx]
+        btns = [[InlineKeyboardButton(c, callback_data=f"opt_{next_idx}_{i}")] for i, c in enumerate(nxt["choices"])]
+        await q.edit_message_text(
+            f"✅ اخترت: *{choice}*\n\n🔘 *{nxt['question']}*",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(btns)
+        )
+    else:
+        # انتهت الخيارات — عرض ملخص واذهب للدفع
+        summary = "\n".join(f"  • {k}: *{v}*" for k, v in po["answers"].items())
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💳 اشترِ الآن | Buy Now", callback_data=f"checkout_{plan_id}")],
+        ])
+        await q.edit_message_text(
+            f"✅ *اختياراتك:*\n{summary}\n\nاضغط للمتابعة للدفع 👇",
+            parse_mode="Markdown",
+            reply_markup=kb
+        )
 
 
 # ═══════════════════════════════════════════
@@ -182,8 +245,9 @@ async def cb_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     plan_id = int(q.data.split("_")[1])
     plan    = db.get_plan(plan_id)
 
-    # احفظ الطلب في قاعدة البيانات بحالة "pending"
-    order_id = db.create_order(q.from_user.id, plan_id, plan["price"])
+    # احفظ الطلب مع خيارات المستخدم
+    user_options = context.user_data.pop("plan_options", {}).get("answers", {})
+    order_id = db.create_order(q.from_user.id, plan_id, plan["price"], user_options=user_options)
 
     plan_name = plan["name_ar"] if lang=="ar" else plan["name_en"]
     svc_name  = plan["service_name_ar"] if lang=="ar" else plan["service_name_en"]
@@ -742,6 +806,7 @@ def register_handlers(app: Application):
     app.add_handler(CallbackQueryHandler(cb_services,      pattern="^services$"))
     app.add_handler(CallbackQueryHandler(cb_service_detail,pattern=r"^svc_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_plan_detail,   pattern=r"^plan_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_plan_option,   pattern=r"^opt_\d+_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_checkout,      pattern=r"^checkout_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_send_proof,    pattern=r"^sendproof_\d+_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_my_subs,       pattern="^my_subs$"))
