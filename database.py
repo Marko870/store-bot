@@ -64,6 +64,7 @@ class Database:
                     amount      REAL NOT NULL,
                     currency    TEXT DEFAULT 'USDT',
                     status      TEXT DEFAULT 'pending',
+                    user_options TEXT DEFAULT '{}',
                     created_at  TEXT DEFAULT (datetime('now')),
                     paid_at     TEXT
                 );
@@ -167,10 +168,12 @@ class Database:
                       (sid, name_ar, name_en, days, price))
 
     # ——— Orders ———
-    def create_order(self, uid, plan_id, amount, currency="USDT"):
+    def create_order(self, uid, plan_id, amount, currency="USDT", user_options=None):
+        import json
         with self.conn() as c:
-            c.execute("INSERT INTO orders (user_id,plan_id,amount,currency) VALUES (?,?,?,?)",
-                      (uid, plan_id, amount, currency))
+            c.execute("""INSERT INTO orders (user_id,plan_id,amount,currency,user_options)
+                         VALUES (?,?,?,?,?)""",
+                      (uid, plan_id, amount, currency, json.dumps(user_options or {})))
             return c.execute("SELECT last_insert_rowid()").fetchone()[0]
 
     def update_order_status(self, order_id, status):
@@ -318,4 +321,10 @@ class Database:
             if r:
                 return json.loads(r[0] or "[]")
             return []
+
+    def update_plan_options(self, plan_id, options: list):
+        import json
+        with self.conn() as c:
+            c.execute("UPDATE plans SET extra_options=? WHERE id=?",
+                      (json.dumps(options), plan_id))
 
