@@ -42,7 +42,8 @@ def is_admin(uid): return uid in cfg.ADMIN_IDS
 # ——— تعديل خدمة ———
 (
     EDIT_CHOOSE_SVC, EDIT_CHOOSE_FIELD, EDIT_NEW_VALUE,
-) = range(40, 43)
+    EDIT_PLAN_OPTS, EDIT_PLAN_OPTS_INPUT,
+) = range(40, 45)
 
 # ——— حذف ———
 (
@@ -575,13 +576,23 @@ async def edit_choose_svc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     svc_id = int(q.data.replace("edit_svc_", ""))
     context.user_data["wizard"] = {"svc_id": svc_id}
     svc = db.get_service(svc_id)
+    # عرض خطط الخدمة أيضاً لتعديل خياراتها
+    plans = db.get_plans(svc["id"])
+    plan_btns = []
+    for p in plans:
+        plan_btns.append([InlineKeyboardButton(
+            f"🔘 تعديل خيارات: {p['name_ar']}",
+            callback_data=f"edit_plan_opts_{p['id']}"
+        )])
+
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("الاسم العربي",   callback_data="edit_field_name_ar"),
-         InlineKeyboardButton("الاسم الإنجليزي",callback_data="edit_field_name_en")],
-        [InlineKeyboardButton("الوصف العربي",   callback_data="edit_field_desc_ar"),
-         InlineKeyboardButton("التصنيف",        callback_data="edit_field_category")],
+        [InlineKeyboardButton("الاسم العربي",    callback_data="edit_field_name_ar"),
+         InlineKeyboardButton("الاسم الإنجليزي", callback_data="edit_field_name_en")],
+        [InlineKeyboardButton("الوصف العربي",    callback_data="edit_field_desc_ar"),
+         InlineKeyboardButton("التصنيف",         callback_data="edit_field_category")],
         [InlineKeyboardButton("🔴 إخفاء الخدمة", callback_data="edit_field_hide"),
          InlineKeyboardButton("🟢 إظهار الخدمة", callback_data="edit_field_show")],
+        *plan_btns,
         [InlineKeyboardButton("❌ إلغاء", callback_data="wizard_cancel")],
     ])
     await q.edit_message_text(
@@ -617,6 +628,81 @@ async def edit_choose_field(update: Update, context: ContextTypes.DEFAULT_TYPE):
         parse_mode="Markdown", reply_markup=cancel_kb()
     )
     return EDIT_NEW_VALUE
+
+async def edit_plan_opts(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """تعديل خيارات خطة معينة"""
+    q = update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return ConversationHandler.END
+    plan_id = int(q.data.replace("edit_plan_opts_", ""))
+    plan    = db.get_plan(plan_id)
+    context.user_data["wizard"]["edit_plan_id"] = plan_id
+    current_opts = db.get_plan_options(plan_id)
+    current_text = ""
+    if current_opts:
+        for o in current_opts:
+            current_text += f"\n❓ {o['question']}\n"
+            current_text += "\n".join(f"  • {c}" for c in o["choices"]) + "\n"
+    else:
+        current_text = "\n_(لا توجد خيارات حالياً)_"
+
+    await q.edit_message_text(
+        f"🔘 *تعديل خيارات: {plan['name_ar']}*\n"
+        f"الخيارات الحالية:{current_text}\n\n"
+        f"أرسل الخيارات الجديدة بهذا الشكل (كل مجموعة في رسالة واحدة):\n\n"
+        f"`السؤال: كيف تريد الاشتراك؟`\n"
+        f"`خيار1: على إيميلك`\n"
+        f"`خيار2: إيميل من عندنا`\n\n"
+        f"إذا في أكثر من مجموعة أرسلها بنفس الرسالة مفصولة بسطر فارغ.\n"
+        f"أو أرسل `حذف` لإزالة كل الخيارات.",
+        parse_mode="Markdown",
+        reply_markup=cancel_kb()
+    )
+    return EDIT_PLAN_OPTS_INPUT
+
+async def edit_plan_opts_save(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not is_admin(update.effective_user.id): return ConversationHandler.END
+    text    = update.message.text.strip()
+    plan_id = context.user_data["wizard"].get("edit_plan_id")
+
+    if text == "حذف":
+        db.update_plan_options(plan_id, [])
+        context.user_data.pop("wizard", None)
+        await update.message.reply_text("✅ تم حذف كل الخيارات!")
+        return ConversationHandler.END
+
+    # تحليل الخيارات - كل مجموعة مفصولة بسطر فارغ
+    groups  = text.split("\n\n")
+    options = []
+    for group in groups:
+        lines    = [l.strip() for l in group.split("\n") if l.strip()]
+        question = ""
+        choices  = []
+        for line in lines:
+            if line.startswith("السؤال:"):
+                question = line.replace("السؤال:", "").strip()
+            elif line.startswith("خيار"):
+                val = line.split(":", 1)[-1].strip()
+                choices.append(val)
+        if question and choices:
+            options.append({"question": question, "choices": choices})
+
+    if not options:
+        await update.message.reply_text(
+            "❌ الصيغة غلط. استخدم:\n"
+            "`السؤال: نص السؤال`\n`خيار1: ...`\n`خيار2: ...`",
+            parse_mode="Markdown"
+        )
+        return EDIT_PLAN_OPTS_INPUT
+
+    db.update_plan_options(plan_id, options)
+    context.user_data.pop("wizard", None)
+    summary = "\n".join(f"❓ {o['question']}: " + " | ".join(o["choices"]) for o in options)
+    await update.message.reply_text(
+        f"✅ *تم تحديث الخيارات!*\n\n{summary}",
+        parse_mode="Markdown"
+    )
+    return ConversationHandler.END
+
 
 async def edit_save_value(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id): return ConversationHandler.END
@@ -777,9 +863,13 @@ def get_wizard_handlers():
     edit_svc_conv = ConversationHandler(
         entry_points=[CallbackQueryHandler(cb_start_edit_svc, pattern="^admin_edit_svc$")],
         states={
-            EDIT_CHOOSE_SVC:   [CallbackQueryHandler(edit_choose_svc, pattern=r"^edit_svc_\d+$")],
-            EDIT_CHOOSE_FIELD: [CallbackQueryHandler(edit_choose_field, pattern="^edit_field_")],
-            EDIT_NEW_VALUE:    [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_save_value)],
+            EDIT_CHOOSE_SVC:    [CallbackQueryHandler(edit_choose_svc,      pattern=r"^edit_svc_\d+$")],
+            EDIT_CHOOSE_FIELD:  [
+                CallbackQueryHandler(edit_choose_field, pattern="^edit_field_"),
+                CallbackQueryHandler(edit_plan_opts,    pattern=r"^edit_plan_opts_\d+$"),
+            ],
+            EDIT_NEW_VALUE:      [MessageHandler(filters.TEXT & ~filters.COMMAND, edit_save_value)],
+            EDIT_PLAN_OPTS_INPUT:[MessageHandler(filters.TEXT & ~filters.COMMAND, edit_plan_opts_save)],
         },
         fallbacks=[CallbackQueryHandler(wizard_cancel, pattern="^wizard_cancel$")],
         per_message=False
@@ -798,3 +888,4 @@ def get_wizard_handlers():
     )
 
     return [add_svc_conv, add_plan_conv, mansub_conv, edit_svc_conv, delete_conv]
+
