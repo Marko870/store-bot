@@ -2,8 +2,9 @@
 🗄️ قاعدة البيانات - PostgreSQL
 """
 import json
-import psycopg2
-import psycopg2.extras
+import psycopg
+import psycopg as psycopg2
+from psycopg.rows import dict_row
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 from config import Config
@@ -30,16 +31,15 @@ class Database:
 
     def fetch(self, sql, params=()):
         with self.conn() as c:
-            cur = c.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur = c.cursor(row_factory=dict_row)
             cur.execute(sql, params)
-            return [dict(r) for r in cur.fetchall()]
+            return cur.fetchall()
 
     def fetchone(self, sql, params=()):
         with self.conn() as c:
-            cur = c.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur = c.cursor(row_factory=dict_row)
             cur.execute(sql, params)
-            r = cur.fetchone()
-            return dict(r) if r else None
+            return cur.fetchone()
 
     def execute(self, sql, params=()):
         with self.conn() as c:
