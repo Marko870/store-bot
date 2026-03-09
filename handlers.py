@@ -1,10 +1,9 @@
 """
-🤖 بوت تلجرام - المعالجات الرئيسية (دفع يدوي USDT)
+🤖 معالجات البوت الرئيسية - User Handlers
 """
-
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
@@ -15,108 +14,96 @@ from config import Config
 from i18n import t
 
 logger = logging.getLogger(__name__)
-db = Database()
+db  = Database()
 cfg = Config()
 
-# ——— حالات انتظار ———
+# ══ حالات الانتظار ══
 AWAITING_PROOF   = "awaiting_proof"
 AWAITING_SUPPORT = "awaiting_support"
+AWAITING_INPUT   = "awaiting_input"   # لأي input ديناميكي (رقم هاتف، كمية، إلخ)
 
 
-def is_admin(uid): return uid in cfg.ADMIN_IDS
+def is_admin(uid):  return uid in cfg.ADMIN_IDS
 def get_lang(uid):
     u = db.get_user(uid)
     return u["lang"] if u else "ar"
-def fmt_date(dt_str):
-    if not dt_str: return "—"
-    try: return datetime.fromisoformat(dt_str).strftime("%Y/%m/%d")
-    except: return dt_str
+
+def fmt_date(dt):
+    if not dt: return "—"
+    if isinstance(dt, str):
+        dt = datetime.fromisoformat(dt)
+    return dt.strftime("%Y/%m/%d")
+
+def progress_bar(days_total, days_remaining):
+    if not days_total or days_total <= 0:
+        return ""
+    pct     = max(0, min(1, days_remaining / days_total))
+    filled  = int(pct * 10)
+    bar     = "█" * filled + "░" * (10 - filled)
+    return f"[{bar}] {int(pct*100)}%"
 
 
-# ═══════════════════════════════════════════
-#               القائمة الرئيسية
-# ═══════════════════════════════════════════
-
-def main_menu_kb(lang):
-    if lang == "ar":
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton("🛒 الخدمات",     callback_data="services"),
-             InlineKeyboardButton("📋 اشتراكاتي",   callback_data="my_subs")],
-            [InlineKeyboardButton("👤 ملفي",         callback_data="profile"),
-             InlineKeyboardButton("📨 الدعم",        callback_data="support")],
-            [InlineKeyboardButton("🌐 English",      callback_data="lang_en")],
-        ])
-    else:
-        return InlineKeyboardMarkup([
-            [InlineKeyboardButton("🛒 Services",          callback_data="services"),
-             InlineKeyboardButton("📋 My Subscriptions",  callback_data="my_subs")],
-            [InlineKeyboardButton("👤 Profile",           callback_data="profile"),
-             InlineKeyboardButton("📨 Support",           callback_data="support")],
-            [InlineKeyboardButton("🌐 عربي",             callback_data="lang_ar")],
-        ])
-
-
-# ═══════════════════════════════════════════
-#                   /start
-# ═══════════════════════════════════════════
+# ══════════════════════════════════════════
+#   /start — القائمة الرئيسية
+# ══════════════════════════════════════════
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
     user = update.effective_user
     db.ensure_user(user.id, user.username or "", user.full_name)
-    u = db.get_user(user.id)
-    if u and u.get("is_banned"):
-        await update.message.reply_text("🚫 تم حظر حسابك.")
-        return
-    context.user_data.clear()
     lang = get_lang(user.id)
-    sub = db.get_active_subscription(user.id)
-    extra = ""
-    if sub:
-        sn = sub["plan_name"] if lang == "ar" else sub["plan_name_en"]
-        extra = (f"\n\n✅ اشتراكك النشط: *{sn}*\n📅 ينتهي: {fmt_date(sub['expires_at'])}"
-                 if lang == "ar" else
-                 f"\n\n✅ Active Plan: *{sn}*\n📅 Expires: {fmt_date(sub['expires_at'])}")
-    text = t("welcome", lang, name=user.first_name) + extra
-    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=main_menu_kb(lang))
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛒 الخدمات | Services",        callback_data="services"),
+         InlineKeyboardButton("📋 اشتراكاتي | My Subs",       callback_data="my_subs")],
+        [InlineKeyboardButton("👤 ملفي | Profile",             callback_data="profile"),
+         InlineKeyboardButton("📨 الدعم | Support",            callback_data="support")],
+        [InlineKeyboardButton("🌐 English" if lang=="ar" else "🌐 العربية",
+                              callback_data="lang_en" if lang=="ar" else "lang_ar")],
+    ])
+    text = t("welcome", lang, name=user.first_name)
+    if update.message:
+        await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
+    else:
+        await update.callback_query.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
 
 
-# ═══════════════════════════════════════════
-#               تغيير اللغة
-# ═══════════════════════════════════════════
+async def cb_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data.clear()
+    await cmd_start(update, context)
+
 
 async def cb_set_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    lang = "en" if q.data == "lang_en" else "ar"
+    lang = q.data.split("_")[1]
     db.set_user_lang(q.from_user.id, lang)
-    sub = db.get_active_subscription(q.from_user.id)
-    extra = ""
-    if sub:
-        sn = sub["plan_name"] if lang == "ar" else sub["plan_name_en"]
-        extra = (f"\n\n✅ اشتراكك النشط: *{sn}*\n📅 ينتهي: {fmt_date(sub['expires_at'])}"
-                 if lang == "ar" else
-                 f"\n\n✅ Active Plan: *{sn}*\n📅 Expires: {fmt_date(sub['expires_at'])}")
-    await q.edit_message_text(
-        t("welcome", lang, name=q.from_user.first_name) + extra,
-        parse_mode="Markdown", reply_markup=main_menu_kb(lang)
-    )
+    await cmd_start(update, context)
 
 
-# ═══════════════════════════════════════════
-#               الخدمات والخطط
-# ═══════════════════════════════════════════
+# ══════════════════════════════════════════
+#   الخدمات
+# ══════════════════════════════════════════
 
 async def cb_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    lang = get_lang(q.from_user.id)
+    lang     = get_lang(q.from_user.id)
     services = db.get_services()
+
     if not services:
-        await q.edit_message_text(t("no_services", lang), reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton(t("back", lang), callback_data="main_menu")]]))
+        await q.edit_message_text(t("no_services", lang),
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(t("back", lang), callback_data="main_menu")
+            ]]))
         return
-    EMOJI = {"streaming": "🎬", "security": "🔒", "bot": "🤖", "digital": "💻"}
-    btns = [[InlineKeyboardButton(
-        f"{EMOJI.get(s['category'],'⭐')} {s['name_ar'] if lang=='ar' else s['name_en']}",
-        callback_data=f"svc_{s['id']}")] for s in services]
+
+    # تجميع الخدمات حسب نوعها
+    TYPE_EMOJI = {"subscription": "📺", "recharge": "📱", "exchange": "💱"}
+    btns = []
+    for svc in services:
+        emoji = TYPE_EMOJI.get(svc.get("type_name", ""), "🔹")
+        name  = svc["name_ar"] if lang == "ar" else svc["name_en"]
+        btns.append([InlineKeyboardButton(f"{emoji} {name}", callback_data=f"svc_{svc['id']}")])
+
     btns.append([InlineKeyboardButton(t("back", lang), callback_data="main_menu")])
     await q.edit_message_text(t("services_title", lang), parse_mode="Markdown",
                                reply_markup=InlineKeyboardMarkup(btns))
@@ -124,715 +111,692 @@ async def cb_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cb_service_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    lang = get_lang(q.from_user.id)
+    lang   = get_lang(q.from_user.id)
     svc_id = int(q.data.split("_")[1])
-    svc   = db.get_service(svc_id)
-    plans = db.get_plans(svc_id)
-    name  = svc["name_ar"] if lang == "ar" else svc["name_en"]
-    desc  = svc.get("description_ar" if lang == "ar" else "description_en", "")
-    DUR   = {30:"شهر" if lang=="ar" else "1 Month",
-             90:"3 أشهر" if lang=="ar" else "3 Months",
-             180:"6 أشهر" if lang=="ar" else "6 Months",
-             365:"سنة" if lang=="ar" else "1 Year"}
-    btns = [[InlineKeyboardButton(
-        f"📦 {DUR.get(p['duration_days'], str(p['duration_days'])+'d')} — {p['price']} USDT",
-        callback_data=f"plan_{p['id']}")] for p in plans]
-    btns.append([InlineKeyboardButton(t("back", lang), callback_data="services")])
-    await q.edit_message_text(
-        f"*{name}*\n{desc}\n\n{'📦 الخطط المتاحة:' if lang=='ar' else '📦 Available Plans:'}",
-        parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
+    svc    = db.get_service(svc_id)
+    plans  = db.get_plans(svc_id)
 
+    if not svc:
+        await q.answer("❌", show_alert=True); return
+
+    name = svc["name_ar"] if lang == "ar" else svc["name_en"]
+    desc = svc.get("description_ar", "") if lang == "ar" else svc.get("description_en", "")
+    type_name = svc.get("type_name", "subscription")
+
+    text = f"🔵 *{name}*"
+    if desc:
+        text += f"\n\n{desc}"
+
+    # للخدمات التبادلية — اعرض سعر الصرف
+    if type_name == "exchange":
+        rate = db.get_exchange_rate(svc_id)
+        if rate:
+            text += f"\n\n💱 سعر الصرف: `1 {rate['unit']} = {rate['rate']:,.0f} ل.س`"
+            text += f"\n🕐 آخر تحديث: {fmt_date(rate['updated_at'])}"
+
+    if not plans:
+        btns = [[InlineKeyboardButton(t("back", lang), callback_data="services")]]
+        await q.edit_message_text(text + "\n\n_(لا توجد خطط متاحة حالياً)_",
+                                   parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
+        return
+
+    btns = []
+    for p in plans:
+        pname = p["name_ar"] if lang == "ar" else p["name_en"]
+        btns.append([InlineKeyboardButton(
+            f"📦 {pname} — {p['price']} USDT",
+            callback_data=f"plan_{p['id']}"
+        )])
+
+    btns.append([InlineKeyboardButton(t("back", lang), callback_data="services")])
+    await q.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
+
+
+# ══════════════════════════════════════════
+#   تفاصيل الخطة + الخيارات الديناميكية
+# ══════════════════════════════════════════
 
 async def cb_plan_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     lang    = get_lang(q.from_user.id)
     plan_id = int(q.data.split("_")[1])
     plan    = db.get_plan(plan_id)
+
     if not plan:
         await q.answer("❌ الخطة غير موجودة", show_alert=True); return
 
-    feats_raw = json.loads(plan.get("features", "[]"))
-    feats = [f for f in feats_raw if (lang=="ar") == any('\u0600'<=c<='\u06ff' for c in f)]
-    if not feats: feats = feats_raw
-    feats_text = "\n".join(f"  ✔️ {f}" for f in feats)
+    svc_name  = plan["service_name_ar"] if lang == "ar" else plan["service_name_en"]
+    plan_name = plan["name_ar"] if lang == "ar" else plan["name_en"]
+    features  = json.loads(plan.get("features", "[]"))
+    feats_text = "\n".join(f"  ✔️ {f}" for f in features) if features else ""
 
-    svc_name  = plan["service_name_ar"] if lang=="ar" else plan["service_name_en"]
-    plan_name = plan["name_ar"]         if lang=="ar" else plan["name_en"]
+    text = f"🔵 *{svc_name}*\n📦 *{plan_name}*\n💰 {plan['price']} USDT"
+    if plan["duration_days"] > 0:
+        text += f" / {plan['duration_days']} يوم"
+    if feats_text:
+        text += f"\n\n{feats_text}"
 
-    text = t("plan_details", lang,
-             service=svc_name, plan=plan_name,
-             days=plan["duration_days"], price=plan["price"],
-             features=feats_text)
-
-    # ——— تحقق من وجود خيارات للخطة ———
+    # خيارات ديناميكية
     options = db.get_plan_options(plan_id)
     if options:
-        # إذا في خيارات — احفظ plan_id وابدأ بأول سؤال
-        context.user_data["plan_options"] = {
-            "plan_id": plan_id,
-            "options": options,
-            "current": 0,
-            "answers": {}
+        context.user_data["flow"] = {
+            "plan_id":  plan_id,
+            "options":  options,
+            "step":     0,
+            "answers":  {},
+            "inputs":   {}
         }
-        # بناء أزرار أول سؤال
-        first = options[0]
-        btns = [[InlineKeyboardButton(c, callback_data=f"opt_0_{i}")] for i, c in enumerate(first["choices"])]
-        btns.append([InlineKeyboardButton(t("back", lang), callback_data=f"svc_{plan['service_id']}")])
-        await q.edit_message_text(
-            text + f"\n\n━━━━━━━━━━━━━━━━\n🔘 *{first['question']}*",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(btns)
-        )
+        await _ask_next_option(q, context, lang, text)
     else:
-        # لا يوجد خيارات — اذهب للدفع مباشرة
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💳 اشترِ الآن | Buy Now", callback_data=f"checkout_{plan_id}")],
-            [InlineKeyboardButton(t("back", lang), callback_data=f"svc_{plan['service_id']}")]
-        ])
-        await q.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
+        context.user_data["flow"] = {"plan_id": plan_id, "answers": {}, "inputs": {}}
+        await _show_checkout(q, context, lang, plan)
+
+
+async def _ask_next_option(q_or_msg, context, lang, prefix_text=""):
+    flow    = context.user_data["flow"]
+    options = flow["options"]
+    step    = flow["step"]
+
+    if step >= len(options):
+        # انتهت الخيارات — روح للدفع
+        plan = db.get_plan(flow["plan_id"])
+        await _show_checkout(q_or_msg, context, lang, plan)
+        return
+
+    opt = options[step]
+
+    # نوع الخيار: اختيار أزرار أو إدخال نص
+    if opt.get("type") == "input":
+        # طلب نص من المستخدم
+        context.user_data[AWAITING_INPUT] = {"field": opt["key"], "label": opt["question"]}
+        prompt = f"{prefix_text}\n\n🔸 *{opt['question']}*" if prefix_text else f"🔸 *{opt['question']}*"
+        if hasattr(q_or_msg, "edit_message_text"):
+            await q_or_msg.edit_message_text(prompt, parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(t("cancel", lang), callback_data="main_menu")
+                ]]))
+        else:
+            await q_or_msg.reply_text(prompt, parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton(t("cancel", lang), callback_data="main_menu")
+                ]]))
+    else:
+        # خيارات أزرار
+        btns = [[InlineKeyboardButton(c, callback_data=f"opt_{step}_{i}")]
+                for i, c in enumerate(opt["choices"])]
+        prompt = f"{prefix_text}\n\n🔸 *{opt['question']}*" if prefix_text else f"🔸 *{opt['question']}*"
+        if hasattr(q_or_msg, "edit_message_text"):
+            await q_or_msg.edit_message_text(prompt, parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(btns))
+        else:
+            await q_or_msg.reply_text(prompt, parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup(btns))
 
 
 async def cb_plan_option(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """المستخدم يختار من خيارات الخطة"""
     q = update.callback_query; await q.answer()
-    lang = get_lang(q.from_user.id)
-    # opt_<question_index>_<choice_index>
-    parts  = q.data.split("_")
-    q_idx  = int(parts[1])
-    c_idx  = int(parts[2])
+    lang  = get_lang(q.from_user.id)
+    parts = q.data.split("_")
+    step  = int(parts[1])
+    cidx  = int(parts[2])
 
-    po = context.user_data.get("plan_options")
-    if not po:
-        await q.answer("❌ انتهت الجلسة، أعد المحاولة", show_alert=True); return
+    flow = context.user_data.get("flow")
+    if not flow:
+        await q.answer("❌ انتهت الجلسة", show_alert=True); return
 
-    options  = po["options"]
-    plan_id  = po["plan_id"]
-    question = options[q_idx]["question"]
-    choice   = options[q_idx]["choices"][c_idx]
-    po["answers"][question] = choice
+    opt    = flow["options"][step]
+    choice = opt["choices"][cidx]
+    flow["answers"][opt["question"]] = choice
+    flow["step"] = step + 1
 
-    next_idx = q_idx + 1
-    if next_idx < len(options):
-        # سؤال تالي
-        po["current"] = next_idx
-        nxt  = options[next_idx]
-        btns = [[InlineKeyboardButton(c, callback_data=f"opt_{next_idx}_{i}")] for i, c in enumerate(nxt["choices"])]
-        await q.edit_message_text(
-            f"✅ اخترت: *{choice}*\n\n🔘 *{nxt['question']}*",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(btns)
-        )
+    await _ask_next_option(q, context, lang)
+
+
+async def handle_input_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يستقبل نص المستخدم لأي حقل ديناميكي"""
+    awaiting = context.user_data.get(AWAITING_INPUT)
+    flow     = context.user_data.get("flow")
+
+    if awaiting and flow:
+        field = awaiting["field"]
+        value = update.message.text.strip()
+        flow["inputs"][field] = value
+        flow["step"] += 1
+        context.user_data.pop(AWAITING_INPUT, None)
+
+        lang = get_lang(update.effective_user.id)
+        plan = db.get_plan(flow["plan_id"])
+        await _ask_next_option(update.message, context, lang)
+        return True
+    return False
+
+
+async def _show_checkout(q_or_msg, context, lang, plan):
+    flow      = context.user_data.get("flow", {})
+    answers   = flow.get("answers", {})
+    inputs    = flow.get("inputs", {})
+    svc_name  = plan["service_name_ar"] if lang == "ar" else plan["service_name_en"]
+    plan_name = plan["name_ar"] if lang == "ar" else plan["name_en"]
+
+    # ملخص الخيارات
+    extras = ""
+    for k, v in answers.items():
+        extras += f"\n  • {k}: *{v}*"
+    for k, v in inputs.items():
+        extras += f"\n  • {k}: `{v}`"
+
+    text = t("order_summary", lang,
+             service=svc_name, plan=plan_name,
+             amount=plan["price"], extras=extras)
+
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("💳 متابعة للدفع | Proceed", callback_data=f"checkout_{plan['id']}")],
+        [InlineKeyboardButton(t("back", lang), callback_data=f"svc_{plan['service_id']}")]
+    ])
+
+    if hasattr(q_or_msg, "edit_message_text"):
+        await q_or_msg.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
     else:
-        # انتهت الخيارات — عرض ملخص واذهب للدفع
-        summary = "\n".join(f"  • {k}: *{v}*" for k, v in po["answers"].items())
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("💳 اشترِ الآن | Buy Now", callback_data=f"checkout_{plan_id}")],
-        ])
-        await q.edit_message_text(
-            f"✅ *اختياراتك:*\n{summary}\n\nاضغط للمتابعة للدفع 👇",
-            parse_mode="Markdown",
-            reply_markup=kb
-        )
+        await q_or_msg.reply_text(text, parse_mode="Markdown", reply_markup=kb)
 
 
-# ═══════════════════════════════════════════
-#         عرض معلومات الدفع (USDT يدوي)
-# ═══════════════════════════════════════════
+# ══════════════════════════════════════════
+#   الدفع
+# ══════════════════════════════════════════
 
 async def cb_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     lang    = get_lang(q.from_user.id)
     plan_id = int(q.data.split("_")[1])
     plan    = db.get_plan(plan_id)
+    flow    = context.user_data.get("flow", {})
 
-    # احفظ الطلب مع خيارات المستخدم
-    user_options = context.user_data.pop("plan_options", {}).get("answers", {})
-    order_id = db.create_order(q.from_user.id, plan_id, plan["price"], user_options=user_options)
+    user_options = flow.get("answers", {})
+    user_inputs  = flow.get("inputs", {})
 
-    plan_name = plan["name_ar"] if lang=="ar" else plan["name_en"]
-    svc_name  = plan["service_name_ar"] if lang=="ar" else plan["service_name_en"]
-
-    text = (
-        f"💳 *تفاصيل الدفع | Payment Details*\n\n"
-        f"🛍️ {'الخدمة' if lang=='ar' else 'Service'}: *{svc_name}*\n"
-        f"📦 {'الخطة'   if lang=='ar' else 'Plan'}:    *{plan_name}*\n"
-        f"💰 {'المبلغ'   if lang=='ar' else 'Amount'}:  *{plan['price']} USDT*\n"
-        f"🌐 {'الشبكة'   if lang=='ar' else 'Network'}: `{cfg.USDT_NETWORK}`\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"📤 {'أرسل المبلغ لهذا العنوان:' if lang=='ar' else 'Send the amount to this address:'}\n\n"
-        f"`{cfg.USDT_ADDRESS}`\n\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"{'⚠️ بعد الإرسال، أرفق لقطة شاشة للتحويل هنا وسيتم تفعيل اشتراكك خلال دقائق.' if lang=='ar' else '⚠️ After sending, upload a screenshot of the transfer here and your subscription will be activated within minutes.'}\n\n"
-        f"🔖 {'رقم الطلب' if lang=='ar' else 'Order ID'}: `#{order_id}`"
+    order_id = db.create_order(
+        q.from_user.id, plan_id, plan["service_id"],
+        plan["price"], user_options, user_inputs
     )
+    context.user_data["last_order_id"] = order_id
+
+    svc_name  = plan["service_name_ar"] if lang == "ar" else plan["service_name_en"]
+    plan_name = plan["name_ar"] if lang == "ar" else plan["name_en"]
+
+    text = t("payment_details", lang,
+             service=svc_name, plan=plan_name,
+             amount=plan["price"], network=cfg.USDT_NETWORK,
+             address=cfg.USDT_ADDRESS, order_id=order_id)
 
     kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton(
-            "📸 أرسل إثبات الدفع | Send Proof",
-            callback_data=f"sendproof_{order_id}_{plan_id}")],
+        [InlineKeyboardButton("📸 إرسال إثبات الدفع | Send Proof",
+                              callback_data=f"sendproof_{order_id}_{plan_id}")],
         [InlineKeyboardButton(t("back", lang), callback_data=f"plan_{plan_id}")]
     ])
     await q.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
 
 
-# ═══════════════════════════════════════════
-#         استقبال إثبات الدفع (صورة)
-# ═══════════════════════════════════════════
-
 async def cb_send_proof(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    lang = get_lang(q.from_user.id)
-    parts = q.data.split("_")          # sendproof_<order_id>_<plan_id>
+    lang  = get_lang(q.from_user.id)
+    parts = q.data.split("_")
     order_id = int(parts[1])
     plan_id  = int(parts[2])
 
     context.user_data[AWAITING_PROOF] = {"order_id": order_id, "plan_id": plan_id}
+    db.update_order_status(order_id, "awaiting_approval")
 
-    text = (
-        "📸 *أرسل صورة إثبات التحويل الآن*\n\n"
-        "أرفق screenshot أو صورة من محفظتك تُظهر عملية التحويل.\n\n"
-        "📸 *Send your transfer screenshot now*\n"
-        "Attach a screenshot from your wallet showing the transaction."
+    await q.edit_message_text(
+        t("proof_prompt", lang),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton(t("cancel", lang), callback_data=f"checkout_{plan_id}")
+        ]])
     )
-    kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton("❌ إلغاء | Cancel", callback_data=f"checkout_{plan_id}")
-    ]])
-    await q.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
 
 
 async def handle_payment_proof(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """المستخدم يرسل صورة إثبات الدفع"""
     proof_data = context.user_data.get(AWAITING_PROOF)
     if not proof_data:
-        # تحقق إذا كان ينتظر رسالة دعم
-        await handle_support_message(update, context)
-        return
+        return False
 
     order_id = proof_data["order_id"]
     plan_id  = proof_data["plan_id"]
     lang     = get_lang(update.effective_user.id)
-    u        = db.get_user(update.effective_user.id)
+    user     = db.get_user(update.effective_user.id)
+    order    = db.get_order(order_id)
     plan     = db.get_plan(plan_id)
-
-    # تحديث الطلب كـ "awaiting_approval"
-    db.update_order_status(order_id, "awaiting_approval")
-    context.user_data.pop(AWAITING_PROOF, None)
 
     # إشعار المستخدم
     await update.message.reply_text(
-        (
-            "✅ *تم استلام إثبات الدفع!*\n\n"
-            "⏳ سيتم مراجعته وتفعيل اشتراكك خلال دقائق.\n"
-            f"🔖 رقم الطلب: `#{order_id}`\n\n"
-            "✅ *Payment proof received!*\n"
-            "⏳ It will be reviewed and your subscription activated within minutes.\n"
-            f"🔖 Order ID: `#{order_id}`"
-        ),
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton("🏠 القائمة | Menu", callback_data="main_menu")
-        ]])
+        t("proof_received", lang, order_id=order_id),
+        parse_mode="Markdown"
     )
 
-    # إشعار الأدمن مع الصورة + أزرار تفعيل/رفض
-    plan_name = plan["name_ar"]
+    # تجميع كل تفاصيل الطلب للأدمن
+    user_options = json.loads(order.get("user_options") or "{}")
+    user_inputs  = json.loads(order.get("user_inputs") or "{}")
+
+    options_text = ""
+    for k, v in user_options.items():
+        options_text += f"\n  • {k}: *{v}*"
+    for k, v in user_inputs.items():
+        options_text += f"\n  • {k}: `{v}`"
+
     svc_name  = plan["service_name_ar"]
-    caption = (
-        f"🔔 *طلب دفع جديد يحتاج موافقة!*\n\n"
-        f"👤 المستخدم: {u['full_name']}\n"
+    plan_name = plan["name_ar"]
+    username  = f"@{user['username']}" if user.get("username") else "—"
+
+    admin_text = (
+        f"🔔 *طلب دفع جديد*\n\n"
+        f"👤 المستخدم: {user['full_name']}\n"
         f"🆔 ID: `{update.effective_user.id}`\n"
-        f"📦 الخطة: {svc_name} — {plan_name}\n"
-        f"💰 المبلغ: {plan['price']} USDT\n"
+        f"📱 يوزر: {username}\n\n"
+        f"🛍️ الخدمة: *{svc_name}*\n"
+        f"📦 الخطة: *{plan_name}*\n"
+        f"💰 المبلغ: *{plan['price']} USDT*\n"
         f"🔖 رقم الطلب: `#{order_id}`"
     )
-    approve_kb = InlineKeyboardMarkup([[
-        InlineKeyboardButton(f"✅ تفعيل #{ order_id}",
-                             callback_data=f"admin_approve_{order_id}_{update.effective_user.id}_{plan_id}"),
-        InlineKeyboardButton(f"❌ رفض #{order_id}",
-                             callback_data=f"admin_reject_{order_id}_{update.effective_user.id}")
-    ]])
+    if options_text:
+        admin_text += f"\n\n📋 *خيارات الزبون:*{options_text}"
 
+    admin_kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton("✅ قبول وتفعيل",  callback_data=f"approve_{order_id}_{update.effective_user.id}_{plan_id}"),
+         InlineKeyboardButton("❌ رفض",          callback_data=f"reject_{order_id}_{update.effective_user.id}")],
+        [InlineKeyboardButton("💬 إرسال بيانات للزبون", callback_data=f"sendcreds_{update.effective_user.id}_{order_id}_{plan_id}")]
+    ])
+
+    photo = update.message.photo[-1].file_id if update.message.photo else None
     for admin_id in cfg.ADMIN_IDS:
         try:
-            if update.message.photo:
+            if photo:
                 await context.bot.send_photo(
-                    chat_id=admin_id,
-                    photo=update.message.photo[-1].file_id,
-                    caption=caption,
-                    parse_mode="Markdown",
-                    reply_markup=approve_kb
+                    chat_id=admin_id, photo=photo,
+                    caption=admin_text, parse_mode="Markdown",
+                    reply_markup=admin_kb
                 )
-            elif update.message.document:
+            else:
                 await context.bot.send_document(
                     chat_id=admin_id,
                     document=update.message.document.file_id,
-                    caption=caption,
-                    parse_mode="Markdown",
-                    reply_markup=approve_kb
-                )
-            else:
-                # نص فقط
-                await context.bot.send_message(
-                    chat_id=admin_id,
-                    text=caption + f"\n\n📝 ملاحظة المستخدم: {update.message.text or '—'}",
-                    parse_mode="Markdown",
-                    reply_markup=approve_kb
+                    caption=admin_text, parse_mode="Markdown",
+                    reply_markup=admin_kb
                 )
         except Exception as e:
             logger.error(f"Admin notify failed: {e}")
 
+    context.user_data.pop(AWAITING_PROOF, None)
+    return True
 
-# ═══════════════════════════════════════════
-#          أزرار الأدمن: تفعيل / رفض
-# ═══════════════════════════════════════════
 
-async def cb_admin_approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ══════════════════════════════════════════
+#   أزرار الأدمن على الطلب
+# ══════════════════════════════════════════
+
+async def cb_approve_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     if not is_admin(q.from_user.id): return
 
-    # admin_approve_<order_id>_<user_id>_<plan_id>
     parts    = q.data.split("_")
-    order_id = int(parts[2])
-    user_id  = int(parts[3])
-    plan_id  = int(parts[4])
+    order_id = int(parts[1])
+    user_id  = int(parts[2])
+    plan_id  = int(parts[3])
+    plan     = db.get_plan(plan_id)
 
-    order = db.complete_order(order_id)
-    if not order:
-        await q.answer("⚠️ الطلب غير موجود أو تمت معالجته", show_alert=True)
-        return
+    db.complete_order(order_id)
+    db.create_subscription(
+        user_id, plan_id, order_id, plan["service_id"],
+        plan["duration_days"]
+    )
 
-    plan = db.get_plan(plan_id)
-    db.create_subscription(user_id, plan_id, order_id, plan["duration_days"])
+    # اسأل الأدمن إذا بدو يبعت بيانات الآن
+    await q.edit_message_reply_markup(reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("💬 إرسال بيانات للزبون الآن",
+                              callback_data=f"sendcreds_{user_id}_{order_id}_{plan_id}")],
+        [InlineKeyboardButton("⏭️ تخطي", callback_data="admin_skip")]
+    ]))
 
-    # إشعار المستخدم
+    # إشعار الزبون
     lang = get_lang(user_id)
     try:
         await context.bot.send_message(
             chat_id=user_id,
-            text=(
-                f"🎉 *تم تفعيل اشتراكك!*\n\n"
-                f"📦 الخطة: *{plan['name_ar']}*\n"
-                f"⏳ المدة: {plan['duration_days']} يوم\n\n"
-                f"🎉 *Subscription Activated!*\n"
-                f"📦 Plan: *{plan['name_en']}*\n"
-                f"⏳ Duration: {plan['duration_days']} days\n\n"
-                f"اضغط /start لعرض اشتراكك ✅"
-            ),
+            text=t("sub_activated", lang,
+                   service=plan["service_name_ar"],
+                   plan=plan["name_ar"],
+                   credentials=""),
             parse_mode="Markdown"
         )
     except Exception as e:
         logger.error(f"User notify failed: {e}")
 
-    # تعديل رسالة الأدمن
-    await q.edit_message_caption(
-        caption=(q.message.caption or "") + f"\n\n✅ *تم التفعيل بواسطة @{q.from_user.username}*",
-        parse_mode="Markdown"
-    )
 
-
-async def cb_admin_reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cb_reject_order(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     if not is_admin(q.from_user.id): return
 
-    # admin_reject_<order_id>_<user_id>
     parts    = q.data.split("_")
-    order_id = int(parts[2])
-    user_id  = int(parts[3])
+    order_id = int(parts[1])
+    user_id  = int(parts[2])
 
     db.update_order_status(order_id, "rejected")
+    await q.edit_message_caption(caption=f"❌ *تم رفض الطلب #{order_id}*", parse_mode="Markdown")
 
+    lang = get_lang(user_id)
     try:
         await context.bot.send_message(
             chat_id=user_id,
-            text=(
-                "❌ *تم رفض طلبك*\n\n"
-                "إذا أرسلت المبلغ بالفعل تواصل مع الدعم فوراً.\n\n"
-                "❌ *Your order was rejected*\n"
-                "If you already sent the amount, contact support immediately."
-            ),
+            text=t("order_rejected", lang, order_id=order_id),
             parse_mode="Markdown"
         )
-    except: pass
+    except Exception as e:
+        logger.error(f"User notify failed: {e}")
 
-    await q.edit_message_caption(
-        caption=(q.message.caption or "") + f"\n\n❌ *تم الرفض بواسطة @{q.from_user.username}*",
-        parse_mode="Markdown"
+
+async def cb_send_creds(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """الأدمن يضغط 'إرسال بيانات' من الطلب"""
+    q = update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+
+    parts    = q.data.split("_")
+    user_id  = int(parts[1])
+    order_id = int(parts[2])
+    plan_id  = int(parts[3])
+
+    context.user_data["sending_creds"] = {
+        "user_id":  user_id,
+        "order_id": order_id,
+        "plan_id":  plan_id
+    }
+
+    await q.message.reply_text(
+        f"✏️ أرسل البيانات التي تريد إرسالها للزبون (ID: `{user_id}`)\n\n"
+        f"مثال:\n`إيميل: test@gmail.com\nكلمة السر: 123456`\n\n"
+        f"أو أرسل أي نص تريده:",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ إلغاء", callback_data="admin_skip")
+        ]])
     )
 
 
-# ═══════════════════════════════════════════
-#               اشتراكاتي
-# ═══════════════════════════════════════════
+async def cb_admin_skip(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    context.user_data.pop("sending_creds", None)
+    await q.edit_message_reply_markup(reply_markup=None)
+
+
+# ══════════════════════════════════════════
+#   اشتراكاتي
+# ══════════════════════════════════════════
 
 async def cb_my_subs(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     lang = get_lang(q.from_user.id)
     subs = db.get_all_subscriptions(q.from_user.id)
+
     if not subs:
         await q.edit_message_text(
-            t("no_subscriptions", lang),
+            t("no_subs", lang),
+            parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🛒 الخدمات | Services", callback_data="services")],
+                [InlineKeyboardButton("🛒 الخدمات", callback_data="services")],
                 [InlineKeyboardButton(t("back", lang), callback_data="main_menu")]
             ])
-        ); return
-
-    STATUS = {"active": "✅ نشط", "expired": "❌ منتهي"}
-    lines  = [t("my_subscriptions", lang) + "\n"]
-    for sub in subs[:5]:
-        creds = json.loads(sub.get("credentials", "{}"))
-        creds_text = "".join(f"🔑 {k}: `{v}`\n" for k, v in creds.items())
-        lines.append(
-            f"━━━━━━━━━━━━\n"
-            f"🔵 {sub['service_ar']} — {sub['plan_name']}\n"
-            f"📅 {'ينتهي' if lang=='ar' else 'Expires'}: {fmt_date(sub['expires_at'])}\n"
-            f"📊 {STATUS.get(sub['status'], sub['status'])}\n"
-            f"{creds_text}"
         )
-    await q.edit_message_text(
-        "\n".join(lines), parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("back", lang), callback_data="main_menu")]])
-    )
+        return
+
+    text = t("my_subs", lang) + "\n"
+    renewal_btns = []
+
+    for sub in subs[:5]:
+        creds_raw = json.loads(sub.get("credentials", "{}"))
+        now       = datetime.now()
+
+        # حساب الأيام المتبقية
+        if sub.get("expires_at"):
+            exp = sub["expires_at"]
+            if isinstance(exp, str):
+                exp = datetime.fromisoformat(exp)
+            remaining = (exp - now).days
+            started   = sub.get("started_at")
+            if isinstance(started, str):
+                started = datetime.fromisoformat(started)
+            total_days = sub.get("duration_days", 30) or 30
+            bar = progress_bar(total_days, max(0, remaining))
+            remaining_text = f"{remaining} يوم" if remaining > 0 else "⚠️ منتهي"
+            exp_str = fmt_date(exp)
+        else:
+            remaining_text = "—"
+            bar = ""
+            exp_str = "—"
+
+        # حالة الاشتراك
+        status_emoji = "✅" if sub["status"] == "active" and remaining > 0 else "❌"
+
+        # بيانات الدخول
+        creds_text = ""
+        if creds_raw:
+            creds_text = "\n" + "\n".join(f"  🔑 {k}: `{v}`" for k, v in creds_raw.items())
+
+        started_str = fmt_date(sub.get("started_at"))
+
+        text += (
+            f"\n━━━━━━━━━━━━━━━━\n"
+            f"{status_emoji} *{sub['service_ar']}*\n"
+            f"📦 {sub['plan_name']}\n"
+            f"📅 بدأ: {started_str} | ينتهي: {exp_str}\n"
+            f"⏳ باقي: {remaining_text}\n"
+            f"{bar}"
+            f"{creds_text}\n"
+        )
+
+        # زر تجديد للاشتراكات النشطة
+        if sub["status"] == "active" and sub.get("plan_id"):
+            renewal_btns.append([InlineKeyboardButton(
+                f"♻️ جدد: {sub['service_ar']}",
+                callback_data=f"plan_{sub['plan_id']}"
+            )])
+
+    btns = renewal_btns + [[InlineKeyboardButton(t("back", lang), callback_data="main_menu")]]
+    await q.edit_message_text(text, parse_mode="Markdown",
+                               reply_markup=InlineKeyboardMarkup(btns))
 
 
-# ═══════════════════════════════════════════
-#               الملف الشخصي
-# ═══════════════════════════════════════════
+# ══════════════════════════════════════════
+#   الملف الشخصي
+# ══════════════════════════════════════════
 
 async def cb_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     lang = get_lang(q.from_user.id)
     u    = db.get_user(q.from_user.id)
-    sub  = db.get_active_subscription(q.from_user.id)
-    sub_status = "—"
-    if sub:
-        sn = sub["plan_name"] if lang=="ar" else sub["plan_name_en"]
-        sub_status = f"{sn} ⟶ {fmt_date(sub['expires_at'])}"
-    await q.edit_message_text(
-        t("profile", lang,
-          uid=q.from_user.id, name=u["full_name"],
-          username=u["username"] or "—",
-          joined=fmt_date(u["joined_at"]), sub_status=sub_status),
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("back", lang), callback_data="main_menu")]])
-    )
+
+    text = t("profile", lang,
+             uid=q.from_user.id,
+             name=u["full_name"],
+             joined=fmt_date(u["joined_at"]))
+
+    await q.edit_message_text(text, parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton(t("back", lang), callback_data="main_menu")
+        ]]))
 
 
-# ═══════════════════════════════════════════
-#               الدعم الفني
-# ═══════════════════════════════════════════
+# ══════════════════════════════════════════
+#   الدعم
+# ══════════════════════════════════════════
 
 async def cb_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     lang = get_lang(q.from_user.id)
     context.user_data[AWAITING_SUPPORT] = True
     await q.edit_message_text(
-        t("support_prompt", lang), parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("cancel", lang), callback_data="main_menu")]])
+        t("support_prompt", lang),
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton(t("cancel", lang), callback_data="main_menu")
+        ]])
     )
 
 
 async def handle_support_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.user_data.get(AWAITING_SUPPORT):
-        return
+        return False
+
     lang      = get_lang(update.effective_user.id)
     ticket_id = db.create_ticket(update.effective_user.id, update.message.text)
-    context.user_data.pop(AWAITING_SUPPORT, None)
-    u = db.get_user(update.effective_user.id)
+    user      = db.get_user(update.effective_user.id)
+    username  = f"@{user['username']}" if user.get("username") else "—"
+
+    await update.message.reply_text(t("support_sent", lang), parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton(t("main_menu", lang), callback_data="main_menu")
+        ]]))
+
     for admin_id in cfg.ADMIN_IDS:
         try:
             await context.bot.send_message(
                 chat_id=admin_id,
                 text=(
                     f"🎫 *تذكرة دعم جديدة #{ticket_id}*\n\n"
-                    f"👤 {u['full_name']} (@{u['username']})\n"
+                    f"👤 {user['full_name']} | {username}\n"
                     f"🆔 `{update.effective_user.id}`\n\n"
-                    f"📝 {update.message.text}\n\n"
-                    f"للرد: `/reply {ticket_id} <ردك>`"
+                    f"💬 {update.message.text}"
                 ),
-                parse_mode="Markdown"
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("💬 رد", callback_data=f"replyticket_{ticket_id}_{update.effective_user.id}")
+                ]])
             )
-        except: pass
-    await update.message.reply_text(
-        t("ticket_created", lang, ticket_id=ticket_id),
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 القائمة | Menu", callback_data="main_menu")]])
+        except Exception as e:
+            logger.error(f"Ticket notify failed: {e}")
+
+    context.user_data.pop(AWAITING_SUPPORT, None)
+    return True
+
+
+async def cb_reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    parts     = q.data.split("_")
+    ticket_id = int(parts[1])
+    user_id   = int(parts[2])
+    context.user_data["replying_ticket"] = {"ticket_id": ticket_id, "user_id": user_id}
+    await q.message.reply_text(
+        f"✏️ أرسل ردك على التذكرة #{ticket_id}:",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("❌ إلغاء", callback_data="admin_skip")
+        ]])
     )
 
 
-# ═══════════════════════════════════════════
-#               القائمة الرئيسية (callback)
-# ═══════════════════════════════════════════
-
-async def cb_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    context.user_data.clear()
-    lang = get_lang(q.from_user.id)
-    sub  = db.get_active_subscription(q.from_user.id)
-    extra = ""
-    if sub:
-        sn = sub["plan_name"] if lang=="ar" else sub["plan_name_en"]
-        extra = (f"\n\n✅ اشتراكك النشط: *{sn}*\n📅 ينتهي: {fmt_date(sub['expires_at'])}"
-                 if lang=="ar" else
-                 f"\n\n✅ Active Plan: *{sn}*\n📅 Expires: {fmt_date(sub['expires_at'])}")
-    await q.edit_message_text(
-        t("welcome", lang, name=q.from_user.first_name) + extra,
-        parse_mode="Markdown", reply_markup=main_menu_kb(lang)
-    )
-
-
-# ═══════════════════════════════════════════
-#           لوحة الأدمن
-# ═══════════════════════════════════════════
-
-async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    stats = db.get_stats()
-    text  = t("admin_panel", "ar",
-              users=stats["total_users"], subs=stats["active_subs"],
-              revenue=stats["total_revenue"], pending=stats["pending_orders"],
-              tickets=stats["open_tickets"])
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⏳ الطلبات المعلقة", callback_data="admin_orders"),
-         InlineKeyboardButton("🎫 التذاكر",          callback_data="admin_tickets")],
-        [InlineKeyboardButton("📢 إذاعة",            callback_data="admin_broadcast_prompt")],
-    ])
-    await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
-
-
-async def cb_admin_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    if not is_admin(q.from_user.id): return
-    orders = db.get_pending_orders()
-    if not orders:
-        await q.edit_message_text("✅ لا توجد طلبات معلقة", reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("◀️ رجوع", callback_data="admin_back")]])); return
-    lines = ["⏳ *الطلبات المعلقة:*\n"]
-    btns  = []
-    for o in orders[:10]:
-        lines.append(f"━━━━━━━━━\n📦 #{o['id']} | {o['full_name']} | {o['name_ar']} | {o['amount']} USDT\n")
-        btns.append([
-            InlineKeyboardButton(f"✅ تفعيل #{o['id']}",
-                                 callback_data=f"admin_approve_{o['id']}_{o['user_id']}_{o['plan_id']}"),
-            InlineKeyboardButton(f"❌ رفض #{o['id']}",
-                                 callback_data=f"admin_reject_{o['id']}_{o['user_id']}")
-        ])
-    btns.append([InlineKeyboardButton("◀️ رجوع", callback_data="admin_back")])
-    await q.edit_message_text("\n".join(lines), parse_mode="Markdown",
-                               reply_markup=InlineKeyboardMarkup(btns))
-
-
-async def cb_admin_tickets(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    if not is_admin(q.from_user.id): return
-    tickets = db.get_open_tickets()
-    if not tickets:
-        await q.edit_message_text("✅ لا توجد تذاكر مفتوحة", reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("◀️ رجوع", callback_data="admin_back")]])); return
-    lines = ["🎫 *التذاكر المفتوحة:*\n"]
-    for tk in tickets[:8]:
-        lines.append(
-            f"━━━━━━━\n🎫 #{tk['id']} | {tk['full_name']} (`{tk['user_id']}`)\n"
-            f"📝 {tk['message'][:80]}\n"
-            f"➡️ `/reply {tk['id']} <ردك>`\n"
-        )
-    await q.edit_message_text("\n".join(lines), parse_mode="Markdown",
-                               reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ رجوع", callback_data="admin_back")]]))
-
-
-async def cb_admin_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    q = update.callback_query; await q.answer()
-    if not is_admin(q.from_user.id): return
-    stats = db.get_stats()
-    text  = t("admin_panel", "ar",
-              users=stats["total_users"], subs=stats["active_subs"],
-              revenue=stats["total_revenue"], pending=stats["pending_orders"],
-              tickets=stats["open_tickets"])
-    kb = InlineKeyboardMarkup([
-        [InlineKeyboardButton("⏳ الطلبات المعلقة", callback_data="admin_orders"),
-         InlineKeyboardButton("🎫 التذاكر",          callback_data="admin_tickets")],
-        [InlineKeyboardButton("📢 إذاعة",            callback_data="admin_broadcast_prompt")],
-    ])
-    await q.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
-
-
-async def cmd_reply(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    args = context.args
-    if len(args) < 2:
-        await update.message.reply_text("الاستخدام: /reply <ticket_id> <ردك>"); return
-    ticket_id  = int(args[0])
-    reply_text = " ".join(args[1:])
-    ticket     = db.reply_ticket(ticket_id, reply_text)
-    try:
-        await context.bot.send_message(
-            chat_id=ticket["user_id"],
-            text=(
-                f"📨 *رد الدعم على تذكرتك #{ticket_id}*\n\n"
-                f"{reply_text}\n\n"
-                f"📨 *Support reply to ticket #{ticket_id}*\n{reply_text}"
-            ),
-            parse_mode="Markdown"
-        )
-        await update.message.reply_text(f"✅ تم الرد على التذكرة #{ticket_id}")
-    except Exception as e:
-        await update.message.reply_text(f"❌ فشل: {e}")
-
-
-async def cmd_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id): return
-    if not context.args:
-        await update.message.reply_text("الاستخدام: /broadcast <رسالتك>"); return
-    message = " ".join(context.args)
-    users   = db.get_all_users()
-    sent = failed = 0
-    msg  = await update.message.reply_text(f"⏳ جاري الإرسال لـ {len(users)} مستخدم...")
-    for user in users:
-        try:
-            await context.bot.send_message(chat_id=user["id"], text=message, parse_mode="Markdown")
-            sent += 1
-        except:
-            failed += 1
-    await msg.edit_text(f"📢 *تم!*\n✅ نجح: {sent}\n❌ فشل: {failed}", parse_mode="Markdown")
-
-
-# ═══════════════════════════════════════════
-#          Handler الرسائل الواردة (صور + نصوص)
-# ═══════════════════════════════════════════
+# ══════════════════════════════════════════
+#   معالج الرسائل الواردة الموحد
+# ══════════════════════════════════════════
 
 async def handle_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """موزّع مركزي لكل الرسائل الواردة"""
-    if context.user_data.get(AWAITING_PROOF):
-        await handle_payment_proof(update, context)
-    elif context.user_data.get(AWAITING_SUPPORT):
-        await handle_support_message(update, context)
+    if not update.message: return
+
+    # ١. إثبات دفع (صورة أو ملف)
+    if update.message.photo or update.message.document:
+        if await handle_payment_proof(update, context):
+            return
+
+    if not update.message.text:
+        return
+
+    # ٢. الأدمن يرسل بيانات للزبون
+    if is_admin(update.effective_user.id):
+        sending = context.user_data.get("sending_creds")
+        if sending:
+            user_id  = sending["user_id"]
+            order_id = sending["order_id"]
+            text     = update.message.text.strip()
+            lang     = get_lang(user_id)
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"📬 *بيانات طلبك #{order_id}:*\n\n{text}",
+                    parse_mode="Markdown"
+                )
+                await update.message.reply_text(f"✅ تم إرسال البيانات للزبون (ID: {user_id})")
+            except Exception as e:
+                await update.message.reply_text(f"❌ فشل الإرسال: {e}")
+            context.user_data.pop("sending_creds", None)
+            return
+
+        # الأدمن يرد على تذكرة
+        replying = context.user_data.get("replying_ticket")
+        if replying:
+            ticket_id = replying["ticket_id"]
+            user_id   = replying["user_id"]
+            reply     = update.message.text.strip()
+            db.reply_ticket(ticket_id, reply)
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text=f"📩 *رد فريق الدعم على تذكرتك #{ticket_id}:*\n\n{reply}",
+                    parse_mode="Markdown"
+                )
+                await update.message.reply_text(f"✅ تم إرسال الرد للزبون")
+            except Exception as e:
+                await update.message.reply_text(f"❌ فشل الإرسال: {e}")
+            context.user_data.pop("replying_ticket", None)
+            return
+
+    # ٣. إدخال ديناميكي (رقم هاتف، كمية، إلخ)
+    if await handle_input_response(update, context):
+        return
+
+    # ٤. رسالة دعم
+    if await handle_support_message(update, context):
+        return
 
 
-# ═══════════════════════════════════════════
-#           تسجيل جميع الـ Handlers
-# ═══════════════════════════════════════════
-
-async def cmd_services_shortcut(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """اختصار /services"""
-    context.user_data.clear()
-    user = update.effective_user
-    db.ensure_user(user.id, user.username or "", user.full_name)
-    lang = get_lang(user.id)
-    services = db.get_services()
-    if not services:
-        await update.message.reply_text(t("no_services", lang)); return
-    EMOJI = {"streaming": "🎬", "security": "🔒", "bot": "🤖", "digital": "💻"}
-    btns = [[InlineKeyboardButton(
-        f"{EMOJI.get(s['category'],'⭐')} {s['name_ar'] if lang=='ar' else s['name_en']}",
-        callback_data=f"svc_{s['id']}")] for s in services]
-    btns.append([InlineKeyboardButton(t("back", lang), callback_data="main_menu")])
-    await update.message.reply_text(t("services_title", lang), parse_mode="Markdown",
-                                     reply_markup=InlineKeyboardMarkup(btns))
-
-async def cmd_mysubs_shortcut(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """اختصار /mysubs"""
-    user = update.effective_user
-    db.ensure_user(user.id, user.username or "", user.full_name)
-    lang = get_lang(user.id)
-    subs = db.get_all_subscriptions(user.id)
-    if not subs:
-        await update.message.reply_text(t("no_subscriptions", lang),
-            reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("🛒 الخدمات | Services", callback_data="services")],
-                [InlineKeyboardButton(t("back", lang), callback_data="main_menu")]
-            ])); return
-    STATUS = {"active": "✅ نشط", "expired": "❌ منتهي"}
-    lines = [t("my_subscriptions", lang) + "\n"]
-    for sub in subs[:5]:
-        creds = json.loads(sub.get("credentials", "{}"))
-        creds_text = "".join(f"🔑 {k}: `{v}`\n" for k, v in creds.items())
-        lines.append(
-            f"━━━━━━━━━━━━\n"
-            f"🔵 {sub['service_ar']} — {sub['plan_name']}\n"
-            f"📅 {'ينتهي' if lang=='ar' else 'Expires'}: {fmt_date(sub['expires_at'])}\n"
-            f"📊 {STATUS.get(sub['status'], sub['status'])}\n"
-            f"{creds_text}"
-        )
-    await update.message.reply_text("\n".join(lines), parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("back", lang), callback_data="main_menu")]]))
-
-async def cmd_profile_shortcut(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """اختصار /profile"""
-    user = update.effective_user
-    db.ensure_user(user.id, user.username or "", user.full_name)
-    lang = get_lang(user.id)
-    u   = db.get_user(user.id)
-    sub = db.get_active_subscription(user.id)
-    sub_status = "—"
-    if sub:
-        sn = sub["plan_name"] if lang=="ar" else sub["plan_name_en"]
-        sub_status = f"{sn} ⟶ {fmt_date(sub['expires_at'])}"
-    await update.message.reply_text(
-        t("profile", lang, uid=user.id, name=u["full_name"],
-          username=u["username"] or "—", joined=fmt_date(u["joined_at"]),
-          sub_status=sub_status),
-        parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("back", lang), callback_data="main_menu")]])
-    )
-
-async def cmd_support_shortcut(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """اختصار /support"""
-    user = update.effective_user
-    db.ensure_user(user.id, user.username or "", user.full_name)
-    lang = get_lang(user.id)
-    context.user_data[AWAITING_SUPPORT] = True
-    await update.message.reply_text(
-        t("support_prompt", lang), parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(t("cancel", lang), callback_data="main_menu")]])
-    )
-
+# ══════════════════════════════════════════
+#   تسجيل الـ Handlers
+# ══════════════════════════════════════════
 
 def register_handlers(app: Application):
-    # ——— Wizards الأدمن أولاً (أولوية عالية) ———
-    _register_wizards(app)
+    from admin_wizard import get_wizard_handlers
 
-    # أوامر المستخدم
-    app.add_handler(CommandHandler("start",     cmd_start))
-    app.add_handler(CommandHandler("services",  cmd_services_shortcut))
-    app.add_handler(CommandHandler("mysubs",    cmd_mysubs_shortcut))
-    app.add_handler(CommandHandler("profile",   cmd_profile_shortcut))
-    app.add_handler(CommandHandler("support",   cmd_support_shortcut))
-    app.add_handler(CommandHandler("reply",     cmd_reply))
-    app.add_handler(CommandHandler("broadcast", cmd_broadcast))
+    # Wizards الأدمن أولاً
+    for h in get_wizard_handlers():
+        app.add_handler(h)
+
+    # أوامر
+    app.add_handler(CommandHandler("start",   cmd_start))
+    app.add_handler(CommandHandler("admin",   _cmd_admin_shortcut))
 
     # Callbacks المستخدم
-    app.add_handler(CallbackQueryHandler(cb_main_menu,     pattern="^main_menu$"))
-    app.add_handler(CallbackQueryHandler(cb_set_lang,      pattern="^lang_(ar|en)$"))
-    app.add_handler(CallbackQueryHandler(cb_services,      pattern="^services$"))
-    app.add_handler(CallbackQueryHandler(cb_service_detail,pattern=r"^svc_\d+$"))
-    app.add_handler(CallbackQueryHandler(cb_plan_detail,   pattern=r"^plan_\d+$"))
-    app.add_handler(CallbackQueryHandler(cb_plan_option,   pattern=r"^opt_\d+_\d+$"))
-    app.add_handler(CallbackQueryHandler(cb_checkout,      pattern=r"^checkout_\d+$"))
-    app.add_handler(CallbackQueryHandler(cb_send_proof,    pattern=r"^sendproof_\d+_\d+$"))
-    app.add_handler(CallbackQueryHandler(cb_my_subs,       pattern="^my_subs$"))
-    app.add_handler(CallbackQueryHandler(cb_profile,       pattern="^profile$"))
-    app.add_handler(CallbackQueryHandler(cb_support,       pattern="^support$"))
+    app.add_handler(CallbackQueryHandler(cb_main_menu,      pattern="^main_menu$"))
+    app.add_handler(CallbackQueryHandler(cb_set_lang,       pattern="^lang_(ar|en)$"))
+    app.add_handler(CallbackQueryHandler(cb_services,       pattern="^services$"))
+    app.add_handler(CallbackQueryHandler(cb_service_detail, pattern=r"^svc_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_plan_detail,    pattern=r"^plan_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_plan_option,    pattern=r"^opt_\d+_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_checkout,       pattern=r"^checkout_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_send_proof,     pattern=r"^sendproof_\d+_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_my_subs,        pattern="^my_subs$"))
+    app.add_handler(CallbackQueryHandler(cb_profile,        pattern="^profile$"))
+    app.add_handler(CallbackQueryHandler(cb_support,        pattern="^support$"))
+    app.add_handler(CallbackQueryHandler(cb_reply_ticket,   pattern=r"^replyticket_\d+_\d+$"))
 
     # Callbacks الأدمن
-    app.add_handler(CallbackQueryHandler(cb_admin_orders,  pattern="^admin_orders$"))
-    app.add_handler(CallbackQueryHandler(cb_admin_approve, pattern=r"^admin_approve_\d+_\d+_\d+$"))
-    app.add_handler(CallbackQueryHandler(cb_admin_reject,  pattern=r"^admin_reject_\d+_\d+$"))
-    app.add_handler(CallbackQueryHandler(cb_admin_tickets, pattern="^admin_tickets$"))
-    app.add_handler(CallbackQueryHandler(cb_admin_back,    pattern="^admin_back$"))
+    app.add_handler(CallbackQueryHandler(cb_approve_order,  pattern=r"^approve_\d+_\d+_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_reject_order,   pattern=r"^reject_\d+_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_send_creds,     pattern=r"^sendcreds_\d+_\d+_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_admin_skip,     pattern="^admin_skip$"))
 
-    # رسائل واردة (صور + نصوص)
+    # رسائل واردة
     app.add_handler(MessageHandler(
         (filters.PHOTO | filters.Document.ALL | filters.TEXT) & ~filters.COMMAND,
         handle_incoming
     ))
 
 
-# ——— استيراد وتسجيل الـ Wizards ———
-from admin_wizard import get_wizard_handlers, cmd_admin as wizard_cmd_admin, cb_list_services
-
-def _register_wizards(app: Application):
-    for handler in get_wizard_handlers():
-        app.add_handler(handler)
-    app.add_handler(CommandHandler("admin", wizard_cmd_admin))
-    app.add_handler(CallbackQueryHandler(cb_list_services, pattern="^admin_list_svc$"))
+async def _cmd_admin_shortcut(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    from admin_wizard import cmd_admin
+    await cmd_admin(update, context)
 
