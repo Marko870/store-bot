@@ -1,22 +1,24 @@
 """
-🗄️ قاعدة البيانات - Database Layer (SQLite)
+🗄️ قاعدة البيانات - PostgreSQL
 """
-
-import sqlite3
 import json
+import psycopg2
+import psycopg2.extras
 from datetime import datetime, timedelta
 from contextlib import contextmanager
+from config import Config
+
+cfg = Config()
 
 
 class Database:
-    def __init__(self, db_path: str = "store.db"):
-        self.db_path = db_path
+    def __init__(self):
         self._init_db()
 
     @contextmanager
     def conn(self):
-        c = sqlite3.connect(self.db_path)
-        c.row_factory = sqlite3.Row
+        c = psycopg2.connect(cfg.DATABASE_URL)
+        c.autocommit = False
         try:
             yield c
             c.commit()
@@ -26,305 +28,397 @@ class Database:
         finally:
             c.close()
 
+    def fetch(self, sql, params=()):
+        with self.conn() as c:
+            cur = c.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(sql, params)
+            return [dict(r) for r in cur.fetchall()]
+
+    def fetchone(self, sql, params=()):
+        with self.conn() as c:
+            cur = c.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+            cur.execute(sql, params)
+            r = cur.fetchone()
+            return dict(r) if r else None
+
+    def execute(self, sql, params=()):
+        with self.conn() as c:
+            cur = c.cursor()
+            cur.execute(sql, params)
+            return cur
+
+    def execute_returning(self, sql, params=()):
+        with self.conn() as c:
+            cur = c.cursor()
+            cur.execute(sql, params)
+            c.commit()
+            return cur.fetchone()[0]
+
     def _init_db(self):
         with self.conn() as c:
-            c.executescript("""
+            cur = c.cursor()
+            cur.execute("""
                 CREATE TABLE IF NOT EXISTS users (
-                    id          INTEGER PRIMARY KEY,
+                    id          BIGINT PRIMARY KEY,
                     username    TEXT,
                     full_name   TEXT,
                     lang        TEXT DEFAULT 'ar',
-                    joined_at   TEXT DEFAULT (datetime('now')),
+                    joined_at   TIMESTAMP DEFAULT NOW(),
                     is_banned   INTEGER DEFAULT 0
                 );
+
+                CREATE TABLE IF NOT EXISTS service_types (
+                    id          SERIAL PRIMARY KEY,
+                    name        TEXT UNIQUE NOT NULL,
+                    label_ar    TEXT NOT NULL,
+                    label_en    TEXT NOT NULL
+                );
+
                 CREATE TABLE IF NOT EXISTS services (
-                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id             SERIAL PRIMARY KEY,
                     name_ar        TEXT NOT NULL,
                     name_en        TEXT NOT NULL,
-                    description_ar TEXT,
-                    description_en TEXT,
+                    description_ar TEXT DEFAULT '',
+                    description_en TEXT DEFAULT '',
+                    type_id        INTEGER REFERENCES service_types(id),
                     category       TEXT DEFAULT 'digital',
+                    min_amount     REAL DEFAULT 0,
                     is_active      INTEGER DEFAULT 1
                 );
+
                 CREATE TABLE IF NOT EXISTS plans (
-                    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                    id            SERIAL PRIMARY KEY,
                     service_id    INTEGER REFERENCES services(id),
                     name_ar       TEXT NOT NULL,
                     name_en       TEXT NOT NULL,
-                    duration_days INTEGER NOT NULL,
+                    duration_days INTEGER DEFAULT 0,
                     price         REAL NOT NULL,
-                    extra_options TEXT DEFAULT '[]',
                     features      TEXT DEFAULT '[]',
+                    extra_options TEXT DEFAULT '[]',
                     is_active     INTEGER DEFAULT 1
                 );
-                CREATE TABLE IF NOT EXISTS orders (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id     INTEGER REFERENCES users(id),
-                    plan_id     INTEGER REFERENCES plans(id),
-                    amount      REAL NOT NULL,
-                    currency    TEXT DEFAULT 'USDT',
-                    status      TEXT DEFAULT 'pending',
-                    user_options TEXT DEFAULT '{}',
-                    created_at  TEXT DEFAULT (datetime('now')),
-                    paid_at     TEXT
+
+                CREATE TABLE IF NOT EXISTS exchange_rates (
+                    id         SERIAL PRIMARY KEY,
+                    service_id INTEGER REFERENCES services(id),
+                    rate       REAL NOT NULL,
+                    unit       TEXT DEFAULT 'USDT',
+                    updated_at TIMESTAMP DEFAULT NOW()
                 );
+
+                CREATE TABLE IF NOT EXISTS orders (
+                    id           SERIAL PRIMARY KEY,
+                    user_id      BIGINT REFERENCES users(id),
+                    plan_id      INTEGER REFERENCES plans(id),
+                    service_id   INTEGER REFERENCES services(id),
+                    amount       REAL NOT NULL,
+                    currency     TEXT DEFAULT 'USDT',
+                    status       TEXT DEFAULT 'pending',
+                    user_options TEXT DEFAULT '{}',
+                    user_inputs  TEXT DEFAULT '{}',
+                    created_at   TIMESTAMP DEFAULT NOW(),
+                    paid_at      TIMESTAMP
+                );
+
                 CREATE TABLE IF NOT EXISTS subscriptions (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id     INTEGER REFERENCES users(id),
+                    id          SERIAL PRIMARY KEY,
+                    user_id     BIGINT REFERENCES users(id),
                     plan_id     INTEGER REFERENCES plans(id),
                     order_id    INTEGER REFERENCES orders(id),
+                    service_id  INTEGER REFERENCES services(id),
                     status      TEXT DEFAULT 'active',
-                    started_at  TEXT DEFAULT (datetime('now')),
-                    expires_at  TEXT NOT NULL,
+                    started_at  TIMESTAMP DEFAULT NOW(),
+                    expires_at  TIMESTAMP,
                     credentials TEXT DEFAULT '{}'
                 );
+
                 CREATE TABLE IF NOT EXISTS tickets (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    user_id     INTEGER REFERENCES users(id),
+                    id          SERIAL PRIMARY KEY,
+                    user_id     BIGINT REFERENCES users(id),
                     message     TEXT NOT NULL,
                     reply       TEXT,
                     status      TEXT DEFAULT 'open',
-                    created_at  TEXT DEFAULT (datetime('now'))
+                    created_at  TIMESTAMP DEFAULT NOW()
                 );
             """)
-            self._seed(c)
+            self._seed(cur)
 
-    def _seed(self, c):
-        if c.execute("SELECT COUNT(*) FROM services").fetchone()[0] > 0:
+    def _seed(self, cur):
+        cur.execute("SELECT COUNT(*) FROM service_types")
+        if cur.fetchone()[0] > 0:
             return
-        # خدمات تجريبية
-        for svc in [
-            ("نتفليكس", "Netflix", "🎬 اشتراك نتفليكس 4K حساب خاص", "🎬 Netflix 4K private account", "streaming"),
-            ("VPN احترافي", "Pro VPN", "🔒 VPN سريع بأكثر من 50 سيرفر", "🔒 Fast VPN 50+ servers", "security"),
-            ("بوت تلجرام", "Telegram Bot", "🤖 بوت مخصص حسب طلبك", "🤖 Custom bot on demand", "bot"),
-        ]:
-            c.execute("INSERT INTO services (name_ar,name_en,description_ar,description_en,category) VALUES (?,?,?,?,?)", svc)
+        cur.execute("""
+            INSERT INTO service_types (name, label_ar, label_en) VALUES
+            ('subscription', 'اشتراك رقمي', 'Digital Subscription'),
+            ('recharge',     'شحن رصيد',    'Recharge'),
+            ('exchange',     'تحويل عملات', 'Currency Exchange')
+        """)
 
-        nf = c.execute("SELECT id FROM services WHERE name_en='Netflix'").fetchone()[0]
-        vp = c.execute("SELECT id FROM services WHERE name_en='Pro VPN'").fetchone()[0]
+    # ══════════════════════════════
+    #   Users
+    # ══════════════════════════════
 
-        plans = [
-            (nf, "شهر",    "1 Month",  30,  5.99,  '["جودة 4K","حساب خاص","4K Quality","Private Account"]'),
-            (nf, "3 أشهر", "3 Months", 90,  14.99, '["جودة 4K","توفير 17%","Save 17%"]'),
-            (nf, "سنة",    "1 Year",   365, 49.99, '["جودة 4K","أفضل قيمة","Best Value"]'),
-            (vp, "شهر",    "1 Month",  30,  3.99,  '["50+ سيرفر","سرعة غير محدودة","Unlimited Speed"]'),
-            (vp, "6 أشهر", "6 Months", 180, 19.99, '["50+ سيرفر","توفير 17%","Save 17%"]'),
-        ]
-        for p in plans:
-            c.execute("INSERT INTO plans (service_id,name_ar,name_en,duration_days,price,features) VALUES (?,?,?,?,?,?)", p)
-
-    # ——— Users ———
     def ensure_user(self, uid, username, full_name):
-        with self.conn() as c:
-            c.execute("""INSERT INTO users (id,username,full_name) VALUES (?,?,?)
-                         ON CONFLICT(id) DO UPDATE SET username=excluded.username, full_name=excluded.full_name""",
-                      (uid, username, full_name))
+        self.execute("""
+            INSERT INTO users (id, username, full_name)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (id) DO UPDATE
+            SET username=EXCLUDED.username, full_name=EXCLUDED.full_name
+        """, (uid, username, full_name))
 
     def get_user(self, uid):
-        with self.conn() as c:
-            r = c.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
-            return dict(r) if r else None
+        return self.fetchone("SELECT * FROM users WHERE id=%s", (uid,))
 
     def set_user_lang(self, uid, lang):
-        with self.conn() as c:
-            c.execute("UPDATE users SET lang=? WHERE id=?", (lang, uid))
+        self.execute("UPDATE users SET lang=%s WHERE id=%s", (lang, uid))
 
     def get_all_users(self):
-        with self.conn() as c:
-            return [dict(r) for r in c.execute("SELECT * FROM users WHERE is_banned=0").fetchall()]
+        return self.fetch("SELECT * FROM users WHERE is_banned=0")
 
-    # ——— Services ———
+    def ban_user(self, uid):
+        self.execute("UPDATE users SET is_banned=1 WHERE id=%s", (uid,))
+
+    # ══════════════════════════════
+    #   Service Types
+    # ══════════════════════════════
+
+    def get_service_types(self):
+        return self.fetch("SELECT * FROM service_types ORDER BY id")
+
+    def get_service_type(self, tid):
+        return self.fetchone("SELECT * FROM service_types WHERE id=%s", (tid,))
+
+    # ══════════════════════════════
+    #   Services
+    # ══════════════════════════════
+
     def get_services(self):
-        with self.conn() as c:
-            return [dict(r) for r in c.execute("SELECT * FROM services WHERE is_active=1").fetchall()]
+        return self.fetch("""
+            SELECT s.*, st.name as type_name, st.label_ar as type_label_ar, st.label_en as type_label_en
+            FROM services s
+            LEFT JOIN service_types st ON s.type_id = st.id
+            WHERE s.is_active=1 ORDER BY s.id
+        """)
 
     def get_service(self, sid):
-        with self.conn() as c:
-            r = c.execute("SELECT * FROM services WHERE id=?", (sid,)).fetchone()
-            return dict(r) if r else None
+        return self.fetchone("""
+            SELECT s.*, st.name as type_name, st.label_ar as type_label_ar
+            FROM services s
+            LEFT JOIN service_types st ON s.type_id = st.id
+            WHERE s.id=%s
+        """, (sid,))
 
-    def add_service(self, name_ar, name_en, desc_ar, desc_en, category):
-        with self.conn() as c:
-            c.execute("INSERT INTO services (name_ar,name_en,description_ar,description_en,category) VALUES (?,?,?,?,?)",
-                      (name_ar, name_en, desc_ar, desc_en, category))
+    def add_service(self, name_ar, name_en, desc_ar, desc_en, category, type_id, min_amount=0):
+        return self.execute_returning("""
+            INSERT INTO services (name_ar, name_en, description_ar, description_en, category, type_id, min_amount)
+            VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id
+        """, (name_ar, name_en, desc_ar, desc_en, category, type_id, min_amount))
 
-    # ——— Plans ———
-    def get_plans(self, sid):
-        with self.conn() as c:
-            return [dict(r) for r in
-                    c.execute("SELECT * FROM plans WHERE service_id=? AND is_active=1", (sid,)).fetchall()]
-
-    def get_plan(self, pid):
-        with self.conn() as c:
-            r = c.execute("""SELECT p.*, s.name_ar as service_name_ar, s.name_en as service_name_en,
-                                    s.id as service_id
-                             FROM plans p JOIN services s ON p.service_id=s.id
-                             WHERE p.id=?""", (pid,)).fetchone()
-            return dict(r) if r else None
-
-    def add_plan(self, sid, name_ar, name_en, days, price):
-        with self.conn() as c:
-            c.execute("INSERT INTO plans (service_id,name_ar,name_en,duration_days,price) VALUES (?,?,?,?,?)",
-                      (sid, name_ar, name_en, days, price))
-
-    # ——— Orders ———
-    def create_order(self, uid, plan_id, amount, currency="USDT", user_options=None):
-        import json
-        with self.conn() as c:
-            c.execute("""INSERT INTO orders (user_id,plan_id,amount,currency,user_options)
-                         VALUES (?,?,?,?,?)""",
-                      (uid, plan_id, amount, currency, json.dumps(user_options or {})))
-            return c.execute("SELECT last_insert_rowid()").fetchone()[0]
-
-    def update_order_status(self, order_id, status):
-        with self.conn() as c:
-            c.execute("UPDATE orders SET status=? WHERE id=?", (status, order_id))
-
-    def complete_order(self, order_id):
-        with self.conn() as c:
-            c.execute("UPDATE orders SET status='paid', paid_at=datetime('now') WHERE id=?", (order_id,))
-            r = c.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
-            return dict(r) if r else None
-
-    def get_order(self, order_id):
-        with self.conn() as c:
-            r = c.execute("SELECT * FROM orders WHERE id=?", (order_id,)).fetchone()
-            return dict(r) if r else None
-
-    def get_pending_orders(self):
-        with self.conn() as c:
-            return [dict(r) for r in c.execute("""
-                SELECT o.*, u.full_name, u.username, p.name_ar, p.name_en, p.id as plan_id
-                FROM orders o
-                JOIN users u ON o.user_id=u.id
-                JOIN plans p ON o.plan_id=p.id
-                WHERE o.status='awaiting_approval'
-                ORDER BY o.created_at DESC""").fetchall()]
-
-    def get_user_orders(self, uid):
-        with self.conn() as c:
-            return [dict(r) for r in c.execute("""
-                SELECT o.*, p.name_ar, s.name_ar as svc_ar
-                FROM orders o
-                JOIN plans p ON o.plan_id=p.id
-                JOIN services s ON p.service_id=s.id
-                WHERE o.user_id=? ORDER BY o.created_at DESC LIMIT 10""", (uid,)).fetchall()]
-
-    # ——— Subscriptions ———
-    def create_subscription(self, uid, plan_id, order_id, days, credentials="{}"):
-        expires = (datetime.now() + timedelta(days=days)).isoformat()
-        with self.conn() as c:
-            c.execute("""INSERT INTO subscriptions (user_id,plan_id,order_id,expires_at,credentials)
-                         VALUES (?,?,?,?,?)""", (uid, plan_id, order_id, expires, credentials))
-
-    def get_active_subscription(self, uid):
-        with self.conn() as c:
-            r = c.execute("""
-                SELECT sub.*, p.name_ar as plan_name, p.name_en as plan_name_en,
-                       s.name_ar as service_ar, s.name_en as service_en
-                FROM subscriptions sub
-                JOIN plans p ON sub.plan_id=p.id
-                JOIN services s ON p.service_id=s.id
-                WHERE sub.user_id=? AND sub.status='active' AND sub.expires_at > datetime('now')
-                ORDER BY sub.expires_at DESC LIMIT 1""", (uid,)).fetchone()
-            return dict(r) if r else None
-
-    def get_all_subscriptions(self, uid):
-        with self.conn() as c:
-            return [dict(r) for r in c.execute("""
-                SELECT sub.*, p.name_ar as plan_name, s.name_ar as service_ar
-                FROM subscriptions sub
-                JOIN plans p ON sub.plan_id=p.id
-                JOIN services s ON p.service_id=s.id
-                WHERE sub.user_id=? ORDER BY sub.started_at DESC""", (uid,)).fetchall()]
-
-    def get_expiring_soon(self, days=3):
-        threshold = (datetime.now() + timedelta(days=days)).isoformat()
-        with self.conn() as c:
-            return [dict(r) for r in c.execute("""
-                SELECT sub.*, u.id as user_id, p.name_ar as plan_name
-                FROM subscriptions sub
-                JOIN users u ON sub.user_id=u.id
-                JOIN plans p ON sub.plan_id=p.id
-                WHERE sub.status='active' AND sub.expires_at <= ? AND sub.expires_at > datetime('now')
-            """, (threshold,)).fetchall()]
-
-    def update_subscription_credentials(self, sub_id, credentials: dict):
-        with self.conn() as c:
-            c.execute("UPDATE subscriptions SET credentials=? WHERE id=?",
-                      (json.dumps(credentials), sub_id))
-
-    # ——— Tickets ———
-    def create_ticket(self, uid, message):
-        with self.conn() as c:
-            c.execute("INSERT INTO tickets (user_id,message) VALUES (?,?)", (uid, message))
-            return c.execute("SELECT last_insert_rowid()").fetchone()[0]
-
-    def get_open_tickets(self):
-        with self.conn() as c:
-            return [dict(r) for r in c.execute("""
-                SELECT t.*, u.full_name, u.username
-                FROM tickets t JOIN users u ON t.user_id=u.id
-                WHERE t.status='open' ORDER BY t.created_at DESC""").fetchall()]
-
-    def reply_ticket(self, ticket_id, reply):
-        with self.conn() as c:
-            c.execute("UPDATE tickets SET reply=?, status='closed' WHERE id=?", (reply, ticket_id))
-            r = c.execute("SELECT * FROM tickets WHERE id=?", (ticket_id,)).fetchone()
-            return dict(r) if r else None
-
-    # ——— Stats ———
-    def get_stats(self):
-        with self.conn() as c:
-            return {
-                "total_users":   c.execute("SELECT COUNT(*) FROM users").fetchone()[0],
-                "active_subs":   c.execute("SELECT COUNT(*) FROM subscriptions WHERE status='active' AND expires_at > datetime('now')").fetchone()[0],
-                "total_revenue": round(c.execute("SELECT COALESCE(SUM(amount),0) FROM orders WHERE status='paid'").fetchone()[0], 2),
-                "pending_orders":c.execute("SELECT COUNT(*) FROM orders WHERE status='awaiting_approval'").fetchone()[0],
-                "open_tickets":  c.execute("SELECT COUNT(*) FROM tickets WHERE status='open'").fetchone()[0],
-            }
-
-    # ——— دوال إضافية للأدمن Wizard ———
-
-    def add_plan_full(self, svc_id, name_ar, name_en, days, price, features=None, options=None):
-        import json
-        with self.conn() as c:
-            c.execute("""INSERT INTO plans (service_id,name_ar,name_en,duration_days,price,features,extra_options)
-                         VALUES (?,?,?,?,?,?,?)""",
-                      (svc_id, name_ar, name_en, days, price,
-                       json.dumps(features or []),
-                       json.dumps(options or [])))
-
-    def toggle_service(self, svc_id, active: int):
-        with self.conn() as c:
-            c.execute("UPDATE services SET is_active=? WHERE id=?", (active, svc_id))
-
-    def update_service_field(self, svc_id, field, value):
-        allowed = {"name_ar", "name_en", "description_ar", "description_en", "category"}
+    def update_service_field(self, sid, field, value):
+        allowed = {"name_ar", "name_en", "description_ar", "description_en", "category", "min_amount"}
         if field not in allowed:
             return
-        with self.conn() as c:
-            c.execute(f"UPDATE services SET {field}=? WHERE id=?", (value, svc_id))
+        self.execute(f"UPDATE services SET {field}=%s WHERE id=%s", (value, sid))
 
-    def delete_service(self, svc_id):
-        with self.conn() as c:
-            c.execute("UPDATE services SET is_active=0 WHERE id=?", (svc_id,))
+    def toggle_service(self, sid, active):
+        self.execute("UPDATE services SET is_active=%s WHERE id=%s", (active, sid))
 
-    def delete_plan(self, plan_id):
-        with self.conn() as c:
-            c.execute("UPDATE plans SET is_active=0 WHERE id=?", (plan_id,))
+    def delete_service(self, sid):
+        self.execute("UPDATE services SET is_active=0 WHERE id=%s", (sid,))
 
-    def get_plan_options(self, plan_id):
-        import json
-        with self.conn() as c:
-            r = c.execute("SELECT extra_options FROM plans WHERE id=?", (plan_id,)).fetchone()
-            if r:
-                return json.loads(r[0] or "[]")
-            return []
+    # ══════════════════════════════
+    #   Plans
+    # ══════════════════════════════
 
-    def update_plan_options(self, plan_id, options: list):
-        import json
-        with self.conn() as c:
-            c.execute("UPDATE plans SET extra_options=? WHERE id=?",
-                      (json.dumps(options), plan_id))
+    def get_plans(self, sid):
+        return self.fetch("SELECT * FROM plans WHERE service_id=%s AND is_active=1 ORDER BY price", (sid,))
+
+    def get_plan(self, pid):
+        return self.fetchone("""
+            SELECT p.*, s.name_ar as service_name_ar, s.name_en as service_name_en,
+                   s.id as service_id, s.type_id, s.min_amount,
+                   st.name as type_name
+            FROM plans p
+            JOIN services s ON p.service_id = s.id
+            JOIN service_types st ON s.type_id = st.id
+            WHERE p.id=%s
+        """, (pid,))
+
+    def add_plan_full(self, svc_id, name_ar, name_en, days, price, features=None, options=None):
+        self.execute("""
+            INSERT INTO plans (service_id, name_ar, name_en, duration_days, price, features, extra_options)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (svc_id, name_ar, name_en, days, price,
+              json.dumps(features or []), json.dumps(options or [])))
+
+    def update_plan_options(self, pid, options):
+        self.execute("UPDATE plans SET extra_options=%s WHERE id=%s", (json.dumps(options), pid))
+
+    def update_plan_field(self, pid, field, value):
+        allowed = {"name_ar", "name_en", "duration_days", "price"}
+        if field not in allowed:
+            return
+        self.execute(f"UPDATE plans SET {field}=%s WHERE id=%s", (value, pid))
+
+    def get_plan_options(self, pid):
+        r = self.fetchone("SELECT extra_options FROM plans WHERE id=%s", (pid,))
+        if r:
+            return json.loads(r["extra_options"] or "[]")
+        return []
+
+    def delete_plan(self, pid):
+        self.execute("UPDATE plans SET is_active=0 WHERE id=%s", (pid,))
+
+    # ══════════════════════════════
+    #   Exchange Rates
+    # ══════════════════════════════
+
+    def get_exchange_rate(self, service_id):
+        return self.fetchone(
+            "SELECT * FROM exchange_rates WHERE service_id=%s ORDER BY updated_at DESC LIMIT 1",
+            (service_id,)
+        )
+
+    def set_exchange_rate(self, service_id, rate, unit="USDT"):
+        existing = self.get_exchange_rate(service_id)
+        if existing:
+            self.execute(
+                "UPDATE exchange_rates SET rate=%s, unit=%s, updated_at=NOW() WHERE service_id=%s",
+                (rate, unit, service_id)
+            )
+        else:
+            self.execute(
+                "INSERT INTO exchange_rates (service_id, rate, unit) VALUES (%s, %s, %s)",
+                (service_id, rate, unit)
+            )
+
+    # ══════════════════════════════
+    #   Orders
+    # ══════════════════════════════
+
+    def create_order(self, uid, plan_id, service_id, amount, user_options=None, user_inputs=None):
+        return self.execute_returning("""
+            INSERT INTO orders (user_id, plan_id, service_id, amount, user_options, user_inputs)
+            VALUES (%s, %s, %s, %s, %s, %s) RETURNING id
+        """, (uid, plan_id, service_id, amount,
+              json.dumps(user_options or {}),
+              json.dumps(user_inputs or {})))
+
+    def get_order(self, order_id):
+        return self.fetchone("SELECT * FROM orders WHERE id=%s", (order_id,))
+
+    def update_order_status(self, order_id, status):
+        self.execute("UPDATE orders SET status=%s WHERE id=%s", (status, order_id))
+
+    def complete_order(self, order_id):
+        self.execute(
+            "UPDATE orders SET status='paid', paid_at=NOW() WHERE id=%s",
+            (order_id,)
+        )
+        return self.get_order(order_id)
+
+    def get_pending_orders(self):
+        return self.fetch("""
+            SELECT o.*, u.full_name, u.username,
+                   p.name_ar as plan_name_ar, p.name_en as plan_name_en,
+                   s.name_ar as svc_ar, s.name_en as svc_en
+            FROM orders o
+            JOIN users u ON o.user_id = u.id
+            JOIN plans p ON o.plan_id = p.id
+            JOIN services s ON o.service_id = s.id
+            WHERE o.status = 'awaiting_approval'
+            ORDER BY o.created_at DESC
+        """)
+
+    # ══════════════════════════════
+    #   Subscriptions
+    # ══════════════════════════════
+
+    def create_subscription(self, uid, plan_id, order_id, service_id, days, credentials="{}"):
+        if days and days > 0:
+            expires = datetime.now() + timedelta(days=days)
+        else:
+            expires = datetime.now() + timedelta(days=3650)  # خدمات بدون مدة محددة
+        self.execute("""
+            INSERT INTO subscriptions (user_id, plan_id, order_id, service_id, expires_at, credentials)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (uid, plan_id, order_id, service_id, expires, credentials))
+
+    def get_active_subscription(self, uid):
+        return self.fetchone("""
+            SELECT sub.*, p.name_ar as plan_name, p.name_en as plan_name_en,
+                   p.duration_days, s.name_ar as service_ar, s.name_en as service_en
+            FROM subscriptions sub
+            JOIN plans p ON sub.plan_id = p.id
+            JOIN services s ON sub.service_id = s.id
+            WHERE sub.user_id=%s AND sub.status='active' AND sub.expires_at > NOW()
+            ORDER BY sub.expires_at DESC LIMIT 1
+        """, (uid,))
+
+    def get_all_subscriptions(self, uid):
+        return self.fetch("""
+            SELECT sub.*, p.name_ar as plan_name, p.duration_days,
+                   s.name_ar as service_ar
+            FROM subscriptions sub
+            JOIN plans p ON sub.plan_id = p.id
+            JOIN services s ON sub.service_id = s.id
+            WHERE sub.user_id=%s ORDER BY sub.started_at DESC
+        """, (uid,))
+
+    def get_expiring_soon(self, days=3):
+        threshold = datetime.now() + timedelta(days=days)
+        return self.fetch("""
+            SELECT sub.*, u.id as user_id, p.name_ar as plan_name,
+                   p.duration_days, s.name_ar as service_ar
+            FROM subscriptions sub
+            JOIN users u ON sub.user_id = u.id
+            JOIN plans p ON sub.plan_id = p.id
+            JOIN services s ON sub.service_id = s.id
+            WHERE sub.status='active'
+              AND sub.expires_at <= %s
+              AND sub.expires_at > NOW()
+        """, (threshold,))
+
+    def update_subscription_credentials(self, sub_id, credentials):
+        self.execute(
+            "UPDATE subscriptions SET credentials=%s WHERE id=%s",
+            (json.dumps(credentials), sub_id)
+        )
+
+    # ══════════════════════════════
+    #   Tickets
+    # ══════════════════════════════
+
+    def create_ticket(self, uid, message):
+        return self.execute_returning(
+            "INSERT INTO tickets (user_id, message) VALUES (%s, %s) RETURNING id",
+            (uid, message)
+        )
+
+    def get_open_tickets(self):
+        return self.fetch("""
+            SELECT t.*, u.full_name, u.username
+            FROM tickets t JOIN users u ON t.user_id = u.id
+            WHERE t.status='open' ORDER BY t.created_at DESC
+        """)
+
+    def reply_ticket(self, ticket_id, reply):
+        self.execute(
+            "UPDATE tickets SET reply=%s, status='closed' WHERE id=%s",
+            (reply, ticket_id)
+        )
+        return self.fetchone("SELECT * FROM tickets WHERE id=%s", (ticket_id,))
+
+    # ══════════════════════════════
+    #   Stats
+    # ══════════════════════════════
+
+    def get_stats(self):
+        return {
+            "total_users":    self.fetchone("SELECT COUNT(*) as c FROM users")["c"],
+            "active_subs":    self.fetchone("SELECT COUNT(*) as c FROM subscriptions WHERE status='active' AND expires_at > NOW()")["c"],
+            "total_revenue":  round(self.fetchone("SELECT COALESCE(SUM(amount),0) as c FROM orders WHERE status='paid'")["c"], 2),
+            "pending_orders": self.fetchone("SELECT COUNT(*) as c FROM orders WHERE status='awaiting_approval'")["c"],
+            "open_tickets":   self.fetchone("SELECT COUNT(*) as c FROM tickets WHERE status='open'")["c"],
+        }
 
