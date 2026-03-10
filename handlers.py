@@ -249,6 +249,20 @@ async def cb_plan_option(update: Update, context: ContextTypes.DEFAULT_TYPE):
     flow["answers"][opt["question"]] = choice
     flow["step"] = step + 1
 
+    # لو اختار "على إيميلك" — اطلب الإيميل تلقائياً
+    choice_lower = choice.strip()
+    EMAIL_TRIGGERS = ["على إيميلك", "ايميلي", "إيميلي", "my email", "my account"]
+    if any(t in choice_lower for t in EMAIL_TRIGGERS):
+        context.user_data[AWAITING_INPUT] = {"field": "email", "label": "📧 أدخل إيميلك:"}
+        await q.edit_message_text(
+            "📧 *أدخل إيميلك:*",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton(t("cancel", lang), callback_data="main_menu")
+            ]])
+        )
+        return
+
     await _ask_next_option(q, context, lang)
 
 
@@ -788,6 +802,16 @@ def register_handlers(app: Application):
     app.add_handler(CallbackQueryHandler(cb_reject_order,   pattern=r"^reject_\d+_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_send_creds,     pattern=r"^sendcreds_\d+_\d+_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_admin_skip,     pattern="^admin_skip$"))
+
+    # Callbacks لوحة الأدمن — كانت ناقصة
+    from admin_wizard import (cb_list_services, cb_admin_back, cb_orders, cb_tickets,
+                              cb_quickdel_svc, cb_quickdel_confirm)
+    app.add_handler(CallbackQueryHandler(cb_list_services,    pattern="^wiz_list$"))
+    app.add_handler(CallbackQueryHandler(cb_admin_back,       pattern="^admin_back$"))
+    app.add_handler(CallbackQueryHandler(cb_orders,           pattern="^wiz_orders$"))
+    app.add_handler(CallbackQueryHandler(cb_tickets,          pattern="^wiz_tickets$"))
+    app.add_handler(CallbackQueryHandler(cb_quickdel_svc,     pattern=r"^quickdel_svc_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_quickdel_confirm, pattern=r"^quickdel_confirm_\d+$"))
 
     # رسائل واردة
     app.add_handler(MessageHandler(
