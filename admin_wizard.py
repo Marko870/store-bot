@@ -288,33 +288,55 @@ async def plan_collect_opts(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     lines = [l.strip() for l in text.split("\n") if l.strip()]
     wiz   = context.user_data["wiz"]
+    added = []
 
-    # حقل نص
-    if any(l.startswith("حقل:") for l in lines):
-        question = next((l.replace("حقل:", "").strip() for l in lines if l.startswith("حقل:")), "")
-        key      = next((l.replace("مفتاح:", "").strip() for l in lines if l.startswith("مفتاح:")), question)
-        if question:
-            wiz["options"].append({"type": "input", "question": question, "key": key})
-            await update.message.reply_text(
-                f"✅ تم إضافة حقل نص: *{question}*\n\nأرسل خياراً آخر أو `تم`",
-                parse_mode="Markdown")
+    # نقرأ الرسالة سطراً سطراً بالترتيب
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+
+        # خيارات أزرار — السؤال أولاً
+        if line.startswith("السؤال:"):
+            question = line.replace("السؤال:", "").strip()
+            choices  = []
+            i += 1
+            while i < len(lines) and lines[i].startswith("خيار"):
+                choices.append(lines[i].split(":", 1)[-1].strip())
+                i += 1
+            if question and choices:
+                wiz["options"].append({"type": "choice", "question": question, "choices": choices})
+                added.append(f"🔘 {question}: " + " | ".join(choices))
+            else:
+                await update.message.reply_text(
+                    "❌ السؤال بدون خيارات، أعد المحاولة:\n`السؤال: نص`\n`خيار1: ...`",
+                    parse_mode="Markdown")
+                return PLAN_OPTS_Q
+
+        # حقل نص
+        elif line.startswith("حقل:"):
+            question = line.replace("حقل:", "").strip()
+            key = question
+            if i + 1 < len(lines) and lines[i + 1].startswith("مفتاح:"):
+                key = lines[i + 1].replace("مفتاح:", "").strip()
+                i += 1
+            if question:
+                wiz["options"].append({"type": "input", "question": question, "key": key})
+                added.append(f"📝 حقل نص: {question}")
+            i += 1
+
         else:
-            await update.message.reply_text("❌ الصيغة غلط، أعد المحاولة")
-        return PLAN_OPTS_Q
+            i += 1
 
-    # خيارات أزرار
-    question = next((l.replace("السؤال:", "").strip() for l in lines if l.startswith("السؤال:")), "")
-    choices  = [l.split(":", 1)[-1].strip() for l in lines if l.startswith("خيار")]
-    if question and choices:
-        wiz["options"].append({"type": "choice", "question": question, "choices": choices})
+    if added:
+        summary = "\n".join(f"✅ {a}" for a in added)
         await update.message.reply_text(
-            f"✅ تم إضافة: *{question}*\n" + " | ".join(choices) + "\n\nأرسل خياراً آخر أو `تم`",
+            f"{summary}\n\nأرسل خياراً آخر أو `تم`",
             parse_mode="Markdown")
     else:
         await update.message.reply_text(
-            "❌ الصيغة غلط. استخدم:\n"
-            "`السؤال: نص`\n`خيار1: ...`\n`خيار2: ...`\n\n"
-            "أو للحقل النصي:\n`حقل: اسم الحقل`\n`مفتاح: key`",
+            "❌ الصيغة غلط. استخدم:\n\n"
+            "*خيارات أزرار:*\n`السؤال: كيف تريد الاشتراك؟`\n`خيار1: على إيميلك`\n`خيار2: إيميل من عندنا`\n\n"
+            "*حقل نص:*\n`حقل: رقم هاتفك`\n`مفتاح: phone`",
             parse_mode="Markdown")
     return PLAN_OPTS_Q
 
@@ -813,7 +835,7 @@ def get_wizard_handlers():
                     CallbackQueryHandler(plan_add_opts,  pattern="^plan_add_opts$"),
                     MessageHandler(filters.TEXT & ~filters.COMMAND, plan_collect_opts)
                 ],
-            }, fallbacks=CANCEL, per_message=False),
+            }, fallbacks=CANCEL, per_message=False, allow_reentry=True),
 
         ConversationHandler(
             entry_points=[CallbackQueryHandler(wiz_edit_start, pattern="^wiz_edit_svc$")],
