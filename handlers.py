@@ -682,9 +682,27 @@ async def cb_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"✅ اشتراكات نشطة: {active}"
     )
     await q.edit_message_text(text, parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🌍 تعديل الدولة", callback_data="edit_country")],
+            [InlineKeyboardButton(t("back", lang),   callback_data="main_menu")]
+        ]))
+
+
+# ══════════════════════════════════════════
+#   تعديل الدولة
+# ══════════════════════════════════════════
+
+async def cb_edit_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    lang = get_lang(q.from_user.id)
+    context.user_data[AWAITING_COUNTRY] = True
+    await q.edit_message_text(
+        "🌍 *تعديل الدولة*\n\nأرسل اسم دولتك:",
+        parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton(t("back", lang), callback_data="main_menu")
-        ]]))
+            InlineKeyboardButton(t("cancel", lang), callback_data="profile")
+        ]])
+    )
 
 
 # ══════════════════════════════════════════
@@ -864,6 +882,7 @@ def register_handlers(app: Application):
     app.add_handler(CallbackQueryHandler(cb_profile,        pattern="^profile$"))
     app.add_handler(CallbackQueryHandler(cb_support,        pattern="^support$"))
     app.add_handler(CallbackQueryHandler(cb_reply_ticket,   pattern=r"^replyticket_\d+_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_edit_country,   pattern="^edit_country$"))
 
     # Callbacks الأدمن
     app.add_handler(CallbackQueryHandler(cb_approve_order,  pattern=r"^approve_\d+_\d+_\d+$"))
