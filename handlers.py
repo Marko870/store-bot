@@ -13,6 +13,7 @@ from database import Database
 from config import Config
 from i18n import t
 
+import re
 logger = logging.getLogger(__name__)
 db  = Database()
 cfg = Config()
@@ -20,7 +21,21 @@ cfg = Config()
 # ══ حالات الانتظار ══
 AWAITING_PROOF   = "awaiting_proof"
 AWAITING_SUPPORT = "awaiting_support"
-AWAITING_INPUT   = "awaiting_input"   # لأي input ديناميكي (رقم هاتف، كمية، إلخ)
+AWAITING_INPUT   = "awaiting_input"
+AWAITING_COUNTRY = "awaiting_country"
+
+# ══ Validation ══
+def validate_email(email: str) -> bool:
+    """التحقق من صحة الإيميل بالمعايير الدولية"""
+    pattern = r'^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$'
+    return bool(re.match(pattern, email)) and len(email) <= 254
+
+def validate_phone(phone: str) -> bool:
+    """التحقق من صحة رقم الهاتف مع رمز الدولة"""
+    # يقبل: +963xxxxxxxxx أو 00963xxxxxxxxx
+    pattern = r'^(\+|00)[1-9]\d{6,14}$'
+    cleaned = phone.replace(' ', '').replace('-', '')
+    return bool(re.match(pattern, cleaned))
 
 
 def is_admin(uid):  return uid in cfg.ADMIN_IDS
@@ -50,8 +65,16 @@ def progress_bar(days_total, days_remaining):
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
     user = update.effective_user
-    db.ensure_user(user.id, user.username or "", user.full_name)
+    is_new = db.ensure_user_new(user.id, user.username or "", user.full_name)
     lang = get_lang(user.id)
+
+    # مستخدم جديد — اسأله عن دولته
+    if is_new:
+        context.user_data[AWAITING_COUNTRY] = True
+        text = f"👋 أهلاً *{user.first_name}*! مرحباً بك في Nova Plus 🛍️\n\nقبل أن نبدأ، من أي دولة أنت؟\n_مثال: سوريا، السعودية، الإمارات_"
+        if update.message:
+            await update.message.reply_text(text, parse_mode="Markdown")
+        return
 
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🛒 الخدمات | Services",        callback_data="services"),
@@ -267,18 +290,39 @@ async def cb_plan_option(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_input_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """يستقبل نص المستخدم لأي حقل ديناميكي"""
+    """يستقبل نص المستخدم لأي حقل ديناميكي مع validation"""
     awaiting = context.user_data.get(AWAITING_INPUT)
     flow     = context.user_data.get("flow")
 
     if awaiting and flow:
         field = awaiting["field"]
         value = update.message.text.strip()
+        lang  = get_lang(update.effective_user.id)
+
+        # ══ التحقق من الإيميل ══
+        if field == "email":
+            if not validate_email(value):
+                await update.message.reply_text(
+                    "❌ *الإيميل غير صحيح*\n\nتأكد من الصيغة الصحيحة، مثال:\n`example@gmail.com`",
+                    parse_mode="Markdown"
+                )
+                return True
+        # ══ التحقق من رقم الهاتف ══
+        elif field in ("phone", "رقم هاتفك", "phone_number"):
+            if not validate_phone(value):
+                await update.message.reply_text(
+                    "❌ *رقم الهاتف غير صحيح*\n\n"
+                    "لازم تضيف رمز الدولة في البداية، مثال:\n"
+                    "`+963912345678` (سوريا)\n"
+                    "`+966512345678` (السعودية)\n"
+                    "`+9715XXXXXXXX` (الإمارات)",
+                    parse_mode="Markdown"
+                )
+                return True
         flow["inputs"][field] = value
         flow["step"] += 1
         context.user_data.pop(AWAITING_INPUT, None)
 
-        lang = get_lang(update.effective_user.id)
         plan = db.get_plan(flow["plan_id"])
         await _ask_next_option(update.message, context, lang)
         return True
@@ -623,14 +667,20 @@ async def cb_my_subs(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cb_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    lang = get_lang(q.from_user.id)
-    u    = db.get_user(q.from_user.id)
+    lang    = get_lang(q.from_user.id)
+    u       = db.get_user(q.from_user.id)
+    country = u.get("country", "") or "—"
+    subs    = db.get_all_subscriptions(q.from_user.id)
+    active  = sum(1 for s in subs if s["status"] == "active")
 
-    text = t("profile", lang,
-             uid=q.from_user.id,
-             name=u["full_name"],
-             joined=fmt_date(u["joined_at"]))
-
+    text = (
+        f"👤 *ملفي الشخصي*\n\n"
+        f"🆔 المعرف: `{q.from_user.id}`\n"
+        f"👤 الاسم: {u['full_name']}\n"
+        f"🌍 الدولة: {country}\n"
+        f"📅 تاريخ التسجيل: {fmt_date(u['joined_at'])}\n"
+        f"✅ اشتراكات نشطة: {active}"
+    )
     await q.edit_message_text(text, parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([[
             InlineKeyboardButton(t("back", lang), callback_data="main_menu")
@@ -711,6 +761,24 @@ async def cb_reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message: return
+
+    # ٠. مستخدم جديد — رد على سؤال الدولة
+    if context.user_data.get(AWAITING_COUNTRY) and update.message.text:
+        country = update.message.text.strip()
+        db.set_user_country(update.effective_user.id, country)
+        context.user_data.pop(AWAITING_COUNTRY, None)
+        lang = get_lang(update.effective_user.id)
+        kb = InlineKeyboardMarkup([
+            [InlineKeyboardButton("🛒 الخدمات | Services",  callback_data="services"),
+             InlineKeyboardButton("📋 اشتراكاتي | My Subs", callback_data="my_subs")],
+            [InlineKeyboardButton("👤 ملفي | Profile",       callback_data="profile"),
+             InlineKeyboardButton("📨 الدعم | Support",      callback_data="support")],
+        ])
+        await update.message.reply_text(
+            f"✅ تم! أنت من *{country}*\n\nاختر من القائمة أدناه:",
+            parse_mode="Markdown", reply_markup=kb
+        )
+        return
 
     # ١. إثبات دفع (صورة أو ملف)
     if update.message.photo or update.message.document:
