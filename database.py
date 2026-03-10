@@ -63,6 +63,7 @@ class Database:
                     username    TEXT,
                     full_name   TEXT,
                     lang        TEXT DEFAULT 'ar',
+                    country     TEXT DEFAULT '',
                     joined_at   TIMESTAMP DEFAULT NOW(),
                     is_banned   INTEGER DEFAULT 0
                 );
@@ -166,8 +167,28 @@ class Database:
             SET username=EXCLUDED.username, full_name=EXCLUDED.full_name
         """, (uid, username, full_name))
 
+    def ensure_user_new(self, uid, username, full_name) -> bool:
+        """يرجع True لو المستخدم جديد"""
+        existing = self.fetchone("SELECT id FROM users WHERE id=%s", (uid,))
+        if existing:
+            self.execute("""
+                UPDATE users SET username=%s, full_name=%s WHERE id=%s
+            """, (username, full_name, uid))
+            return False
+        self.execute("""
+            INSERT INTO users (id, username, full_name) VALUES (%s, %s, %s)
+        """, (uid, username, full_name))
+        return True
+
+    def set_user_country(self, uid, country):
+        self.execute("UPDATE users SET country=%s WHERE id=%s", (country, uid))
+
     def get_user(self, uid):
         return self.fetchone("SELECT * FROM users WHERE id=%s", (uid,))
+
+    def get_user_country(self, uid):
+        r = self.fetchone("SELECT country FROM users WHERE id=%s", (uid,))
+        return r["country"] if r else ""
 
     def set_user_lang(self, uid, lang):
         self.execute("UPDATE users SET lang=%s WHERE id=%s", (lang, uid))
