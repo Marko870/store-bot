@@ -82,6 +82,7 @@ async def cb_list_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     lines = ["📋 *الخدمات والخطط:*\n"]
+    del_btns = []
     for svc in services:
         plans = db.get_plans(svc["id"])
         lines.append(f"\n🔵 *{svc['name_ar']}* | {svc.get('type_label_ar','—')} | ID:{svc['id']}")
@@ -96,9 +97,52 @@ async def cb_list_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
                          + (f" / {p['duration_days']}ي" if p['duration_days'] > 0 else "")
                          + (f" | {len(opts)} خيارات" if opts else "")
                          + f" (ID:{p['id']})")
+        del_btns.append([InlineKeyboardButton(
+            f"🗑️ حذف: {svc['name_ar']}",
+            callback_data=f"quickdel_svc_{svc['id']}"
+        )])
 
+    del_btns.append([InlineKeyboardButton("◀️ رجوع", callback_data="admin_back")])
     await q.edit_message_text("\n".join(lines), parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ رجوع", callback_data="admin_back")]]))
+        reply_markup=InlineKeyboardMarkup(del_btns))
+
+
+async def cb_quickdel_svc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    svc_id = int(q.data.split("_")[2])
+    svc    = db.get_service(svc_id)
+    if not svc:
+        await q.answer("❌ الخدمة غير موجودة", show_alert=True); return
+    await q.edit_message_text(
+        f"⚠️ هل أنت متأكد من حذف *{svc['name_ar']}*؟\n\nسيتم حذف الخدمة وجميع خططها.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("✅ نعم، احذف", callback_data=f"quickdel_confirm_{svc_id}"),
+             InlineKeyboardButton("❌ لا",         callback_data="wiz_list")]
+        ])
+    )
+
+
+async def cb_quickdel_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return
+    svc_id = int(q.data.split("_")[2])
+    svc    = db.get_service(svc_id)
+    name   = svc["name_ar"] if svc else "—"
+    # حذف الخطط أولاً
+    plans = db.get_plans(svc_id)
+    for p in plans:
+        db.delete_plan(p["id"])
+    db.delete_service(svc_id)
+    await q.edit_message_text(
+        f"✅ تم حذف *{name}* وجميع خططها.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("◀️ رجوع للخدمات", callback_data="wiz_list"),
+            InlineKeyboardButton("🏠 الأدمن", callback_data="admin_back")
+        ]])
+    )
 
 
 # ══════════════════════════════════════════
