@@ -70,7 +70,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # مستخدم جديد — اسأله عن دولته
     if is_new:
-        context.application.user_data.setdefault(user.id, {})[AWAITING_COUNTRY] = True
+        context.user_data[AWAITING_COUNTRY] = True
         text = f"👋 أهلاً *{user.first_name}*! مرحباً بك في Nova Plus 🛍️\n\nقبل أن نبدأ، من أي دولة أنت؟\n_مثال: سوريا، السعودية، الإمارات_"
         if update.message:
             await update.message.reply_text(text, parse_mode="Markdown")
@@ -695,7 +695,7 @@ async def cb_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cb_edit_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     lang = get_lang(q.from_user.id)
-    context.application.user_data.setdefault(q.from_user.id, {})[AWAITING_COUNTRY] = True
+    context.user_data[AWAITING_COUNTRY] = True
     await q.edit_message_text(
         "🌍 *تعديل الدولة*\n\nأرسل اسم دولتك:",
         parse_mode="Markdown",
@@ -781,22 +781,19 @@ async def handle_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message: return
 
     # ٠. رد على سؤال الدولة (مستخدم جديد أو تعديل)
-    uid = update.effective_user.id
-    udata = context.application.user_data.get(uid, {})
-    if udata.get(AWAITING_COUNTRY) and update.message.text:
+    if context.user_data.get(AWAITING_COUNTRY) and update.message.text:
+        uid = update.effective_user.id
         country = update.message.text.strip()
         db.set_user_country(uid, country)
-        context.application.user_data.get(uid, {}).pop(AWAITING_COUNTRY, None)
+        context.user_data.pop(AWAITING_COUNTRY, None)
         lang = get_lang(uid)
-        kb = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🛒 الخدمات | Services",  callback_data="services"),
-             InlineKeyboardButton("📋 اشتراكاتي | My Subs", callback_data="my_subs")],
-            [InlineKeyboardButton("👤 ملفي | Profile",       callback_data="profile"),
-             InlineKeyboardButton("📨 الدعم | Support",      callback_data="support")],
-        ])
         await update.message.reply_text(
-            f"✅ تم! أنت من *{country}*\n\nاختر من القائمة أدناه:",
-            parse_mode="Markdown", reply_markup=kb
+            f"✅ تم! الدولة تم تحديثها إلى *{country}* 🌍",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("👤 ملفي", callback_data="profile"),
+                InlineKeyboardButton("🏠 الرئيسية", callback_data="main_menu")
+            ]])
         )
         return
 
@@ -863,7 +860,10 @@ async def handle_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
 def register_handlers(app: Application):
     from admin_wizard import get_wizard_handlers
 
-    # Wizards الأدمن أولاً
+    # edit_country أولاً قبل الـ wizards
+    app.add_handler(CallbackQueryHandler(cb_edit_country, pattern="^edit_country$"))
+
+    # Wizards الأدمن
     for h in get_wizard_handlers():
         app.add_handler(h)
 
@@ -884,7 +884,7 @@ def register_handlers(app: Application):
     app.add_handler(CallbackQueryHandler(cb_profile,        pattern="^profile$"))
     app.add_handler(CallbackQueryHandler(cb_support,        pattern="^support$"))
     app.add_handler(CallbackQueryHandler(cb_reply_ticket,   pattern=r"^replyticket_\d+_\d+$"))
-    app.add_handler(CallbackQueryHandler(cb_edit_country,   pattern="^edit_country$"))
+
 
     # Callbacks الأدمن
     app.add_handler(CallbackQueryHandler(cb_approve_order,  pattern=r"^approve_\d+_\d+_\d+$"))
