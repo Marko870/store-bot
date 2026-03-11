@@ -64,9 +64,15 @@ class Database:
                     full_name   TEXT,
                     lang        TEXT DEFAULT 'ar',
                     country     TEXT DEFAULT '',
+                    state       TEXT DEFAULT NULL,
                     joined_at   TIMESTAMP DEFAULT NOW(),
                     is_banned   INTEGER DEFAULT 0
                 );
+                -- إضافة عمود state لو ما موجود (للقواعد القديمة)
+                DO $$ BEGIN
+                    ALTER TABLE users ADD COLUMN IF NOT EXISTS state TEXT DEFAULT NULL;
+                EXCEPTION WHEN duplicate_column THEN NULL;
+                END $$;
 
                 CREATE TABLE IF NOT EXISTS service_types (
                     id          SERIAL PRIMARY KEY,
@@ -182,6 +188,16 @@ class Database:
 
     def set_user_country(self, uid, country):
         self.execute("UPDATE users SET country=%s WHERE id=%s", (country, uid))
+
+    def set_user_state(self, uid, state):
+        self.execute("UPDATE users SET state=%s WHERE id=%s", (state, uid))
+
+    def get_user_state(self, uid):
+        r = self.fetchone("SELECT state FROM users WHERE id=%s", (uid,))
+        return r["state"] if r else None
+
+    def clear_user_state(self, uid):
+        self.execute("UPDATE users SET state=NULL WHERE id=%s", (uid,))
 
     def get_user(self, uid):
         return self.fetchone("SELECT * FROM users WHERE id=%s", (uid,))
