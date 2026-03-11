@@ -97,9 +97,22 @@ class Database:
                     is_active      INTEGER DEFAULT 1
                 );
 
+                CREATE TABLE IF NOT EXISTS service_variants (
+                    id         SERIAL PRIMARY KEY,
+                    service_id INTEGER REFERENCES services(id) ON DELETE CASCADE,
+                    name_ar    TEXT NOT NULL,
+                    name_en    TEXT NOT NULL,
+                    is_active  INTEGER DEFAULT 1
+                );
+                DO $$ BEGIN
+                    ALTER TABLE plans ADD COLUMN IF NOT EXISTS variant_id INTEGER REFERENCES service_variants(id) ON DELETE SET NULL;
+                EXCEPTION WHEN duplicate_column THEN NULL;
+                END $$;
+
                 CREATE TABLE IF NOT EXISTS plans (
                     id            SERIAL PRIMARY KEY,
                     service_id    INTEGER REFERENCES services(id),
+                    variant_id    INTEGER REFERENCES service_variants(id) ON DELETE SET NULL,
                     name_ar       TEXT NOT NULL,
                     name_en       TEXT NOT NULL,
                     duration_days INTEGER DEFAULT 0,
@@ -256,6 +269,39 @@ class Database:
             WHERE s.is_active=1 ORDER BY s.id
         """)
 
+    # ══ Variants ══
+    def add_variant(self, service_id, name_ar, name_en) -> int:
+        return self.execute_returning(
+            "INSERT INTO service_variants (service_id, name_ar, name_en) VALUES (%s,%s,%s) RETURNING id",
+            (service_id, name_ar, name_en)
+        )
+
+    def get_variants(self, service_id):
+        return self.fetch(
+            "SELECT * FROM service_variants WHERE service_id=%s AND is_active=1 ORDER BY id",
+            (service_id,)
+        )
+
+    def delete_variant(self, variant_id):
+        self.execute("DELETE FROM service_variants WHERE id=%s", (variant_id,))
+
+    def get_plans_by_variant(self, variant_id):
+        return self.fetch(
+            """SELECT p.*, s.name_ar as service_name_ar, s.name_en as service_name_en, s.id as service_id
+               FROM plans p JOIN services s ON p.service_id=s.id
+               WHERE p.variant_id=%s AND p.is_active=1 ORDER BY p.price""",
+            (variant_id,)
+        )
+
+    def get_plans_no_variant(self, service_id):
+        """خطط الخدمة بدون variant (variant_id IS NULL)"""
+        return self.fetch(
+            """SELECT p.*, s.name_ar as service_name_ar, s.name_en as service_name_en, s.id as service_id
+               FROM plans p JOIN services s ON p.service_id=s.id
+               WHERE p.service_id=%s AND p.variant_id IS NULL AND p.is_active=1 ORDER BY p.price""",
+            (service_id,)
+        )
+
     def get_service(self, sid):
         return self.fetchone("""
             SELECT s.*, st.name as type_name, st.label_ar as type_label_ar
@@ -300,11 +346,11 @@ class Database:
             WHERE p.id=%s
         """, (pid,))
 
-    def add_plan_full(self, svc_id, name_ar, name_en, days, price, features=None, options=None):
+    def add_plan_full(self, svc_id, name_ar, name_en, days, price, features=None, options=None, variant_id=None):
         self.execute("""
-            INSERT INTO plans (service_id, name_ar, name_en, duration_days, price, features, extra_options)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (svc_id, name_ar, name_en, days, price,
+            INSERT INTO plans (service_id, variant_id, name_ar, name_en, duration_days, price, features, extra_options)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, (svc_id, variant_id, name_ar, name_en, days, price,
               json.dumps(features or []), json.dumps(options or [])))
 
     def update_plan_options(self, pid, options):
