@@ -28,6 +28,7 @@ def cancel_kb():
 (MANSUB_USER, MANSUB_PLAN, MANSUB_CREDS) = range(50, 53)
 (RATE_SVC, RATE_VALUE) = range(60, 62)
 (BROADCAST_MSG,) = range(70, 71)
+(VAR_SVC, VAR_NAME_AR, VAR_NAME_EN) = range(80, 83)
 
 
 # ══════════════════════════════════════════
@@ -52,6 +53,7 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("🗑️ حذف",           callback_data="wiz_delete")],
         [InlineKeyboardButton("💱 تحديث سعر صرف", callback_data="wiz_rate"),
          InlineKeyboardButton("📋 عرض الخدمات",   callback_data="wiz_list")],
+        [InlineKeyboardButton("🗂️ أنواع الخدمة",  callback_data="wiz_variants")],
         [InlineKeyboardButton("🎁 اشتراك يدوي",   callback_data="wiz_mansub"),
          InlineKeyboardButton("⏳ الطلبات",        callback_data="wiz_orders")],
         [InlineKeyboardButton("🎫 التذاكر",        callback_data="wiz_tickets"),
@@ -387,7 +389,8 @@ async def plan_collect_opts(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def _save_plan(q, context, options):
     w = context.user_data["wiz"]
     db.add_plan_full(w["svc_id"], w["name_ar"], w["name_en"],
-                     w.get("days", 0), w["price"], w.get("features", []), options)
+                     w.get("days", 0), w["price"], w.get("features", []), options,
+                     variant_id=w.get("variant_id"))
     context.user_data.pop("wiz", None)
     svc = db.get_service(w["svc_id"])
     await q.edit_message_text(
@@ -845,6 +848,88 @@ async def wizard_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ══════════════════════════════════════════
+#   أنواع الخدمة (Variants)
+# ══════════════════════════════════════════
+
+async def wiz_variants_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return ConversationHandler.END
+    services = db.get_services()
+    if not services:
+        await q.edit_message_text("لا توجد خدمات",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع", callback_data="admin_back")]]))
+        return ConversationHandler.END
+    btns = [[InlineKeyboardButton(s["name_ar"], callback_data="varsvc_" + str(s["id"]))] for s in services]
+    btns.append([InlineKeyboardButton("الغاء", callback_data="wizard_cancel")])
+    await q.edit_message_text(
+        "انواع الخدمة\n\nاختر الخدمة:",
+        reply_markup=InlineKeyboardMarkup(btns))
+    return VAR_SVC
+
+
+async def var_svc(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    svc_id   = int(q.data.split("_")[1])
+    context.user_data["wiz"] = {"svc_id": svc_id}
+    svc      = db.get_service(svc_id)
+    variants = db.get_variants(svc_id)
+    svc_name = svc["name_ar"]
+
+    lines = []
+    btns  = []
+    if variants:
+        for v in variants:
+            lines.append("- " + v["name_ar"])
+            btns.append([InlineKeyboardButton("حذف: " + v["name_ar"], callback_data="vardelete_" + str(v["id"]))])
+    else:
+        lines.append("لا توجد انواع بعد")
+
+    text = "انواع " + svc_name + "\n\n" + "\n".join(lines) + "\n\nاضغط لاضافة نوع جديد:"
+    btns.append([InlineKeyboardButton("اضافة نوع", callback_data="varadd_" + str(svc_id))])
+    btns.append([InlineKeyboardButton("الغاء",     callback_data="wizard_cancel")])
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(btns))
+    return VAR_SVC
+
+
+async def var_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    svc_id = int(q.data.split("_")[1])
+    context.user_data["wiz"]["svc_id"] = svc_id
+    await q.edit_message_text("ارسل اسم النوع بالعربي:\nمثال: حساب مشترك، Business، عائلي",
+        reply_markup=cancel_kb())
+    return VAR_NAME_AR
+
+
+async def var_name_ar(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["wiz"]["var_name_ar"] = update.message.text.strip()
+    await update.message.reply_text("ارسل اسم النوع بالانجليزي:", reply_markup=cancel_kb())
+    return VAR_NAME_EN
+
+
+async def var_name_en(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    w = context.user_data["wiz"]
+    w["var_name_en"] = update.message.text.strip()
+    db.add_variant(w["svc_id"], w["var_name_ar"], w["var_name_en"])
+    svc = db.get_service(w["svc_id"])
+    context.user_data.pop("wiz", None)
+    await update.message.reply_text(
+        "تم اضافة النوع " + w["var_name_ar"] + " لخدمة " + svc["name_ar"],
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("لوحة الادمن", callback_data="admin_back")]]))
+    return ConversationHandler.END
+
+
+async def var_delete(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    if not is_admin(q.from_user.id): return ConversationHandler.END
+    var_id = int(q.data.split("_")[1])
+    db.delete_variant(var_id)
+    await q.edit_message_text(
+        "تم الحذف",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("لوحة الادمن", callback_data="admin_back")]]))
+    return ConversationHandler.END
+
+
+# ══════════════════════════════════════════
 #   تسجيل الـ Handlers
 # ══════════════════════════════════════════
 
@@ -852,6 +937,18 @@ def get_wizard_handlers():
     CANCEL = [CallbackQueryHandler(wizard_cancel, pattern="^wizard_cancel$")]
 
     return [
+        ConversationHandler(
+            entry_points=[CallbackQueryHandler(wiz_variants_start, pattern="^wiz_variants$")],
+            states={
+                VAR_SVC:     [
+                    CallbackQueryHandler(var_svc,       pattern=r"^varsvc_\d+$"),
+                    CallbackQueryHandler(var_add_start, pattern=r"^varadd_\d+$"),
+                    CallbackQueryHandler(var_delete,    pattern=r"^vardelete_\d+$"),
+                ],
+                VAR_NAME_AR: [MessageHandler(filters.TEXT & ~filters.COMMAND, var_name_ar)],
+                VAR_NAME_EN: [MessageHandler(filters.TEXT & ~filters.COMMAND, var_name_en)],
+            }, fallbacks=CANCEL, per_message=False, allow_reentry=True),
+
         ConversationHandler(
             entry_points=[CallbackQueryHandler(wiz_add_svc_start, pattern="^wiz_add_svc$")],
             states={
@@ -866,7 +963,10 @@ def get_wizard_handlers():
             entry_points=[CallbackQueryHandler(wiz_add_plan_start, pattern="^wiz_add_plan$")],
             states={
                 PLAN_SVC:     [CallbackQueryHandler(plan_svc, pattern="^plansvc_")],
-                PLAN_NAME_AR: [MessageHandler(filters.TEXT & ~filters.COMMAND, plan_name_ar)],
+                PLAN_NAME_AR: [
+                    CallbackQueryHandler(plan_variant, pattern=r"^planvar_\d+$"),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, plan_name_ar)
+                ],
                 PLAN_NAME_EN: [MessageHandler(filters.TEXT & ~filters.COMMAND, plan_name_en)],
                 PLAN_DAYS:    [
                     CallbackQueryHandler(plan_days, pattern="^pdays_"),
