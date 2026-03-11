@@ -38,6 +38,16 @@ def validate_phone(phone: str) -> bool:
     return bool(re.match(pattern, cleaned))
 
 
+
+def save_flow(uid, flow):
+    db.save_flow(uid, flow)
+
+def load_flow(uid):
+    return db.get_flow(uid)
+
+def clear_flow(uid):
+    db.clear_flow(uid)
+
 def is_admin(uid):  return uid in cfg.ADMIN_IDS
 def get_lang(uid):
     u = db.get_user(uid)
@@ -202,16 +212,20 @@ async def cb_plan_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # خيارات ديناميكية
     options = db.get_plan_options(plan_id)
     if options:
-        context.user_data["flow"] = {
+        flow = {
             "plan_id":  plan_id,
             "options":  options,
             "step":     0,
             "answers":  {},
             "inputs":   {}
         }
+        save_flow(q.from_user.id, flow)
+        context.user_data["flow"] = flow
         await _ask_next_option(q, context, lang, text)
     else:
-        context.user_data["flow"] = {"plan_id": plan_id, "answers": {}, "inputs": {}}
+        flow = {"plan_id": plan_id, "answers": {}, "inputs": {}}
+        save_flow(q.from_user.id, flow)
+        context.user_data["flow"] = flow
         await _show_checkout(q, context, lang, plan)
 
 
@@ -232,6 +246,8 @@ async def _ask_next_option(q_or_msg, context, lang, prefix_text=""):
     if opt.get("type") == "input":
         # طلب نص من المستخدم
         context.user_data[AWAITING_INPUT] = {"field": opt["key"], "label": opt["question"]}
+        uid = q_or_msg.from_user.id if hasattr(q_or_msg, "from_user") else q_or_msg.chat.id
+        db.set_user_state(uid, AWAITING_INPUT + ":" + opt["key"])
         prompt = f"{prefix_text}\n\n🔸 *{opt['question']}*" if prefix_text else f"🔸 *{opt['question']}*"
         if hasattr(q_or_msg, "edit_message_text"):
             await q_or_msg.edit_message_text(prompt, parse_mode="Markdown",
@@ -263,20 +279,23 @@ async def cb_plan_option(update: Update, context: ContextTypes.DEFAULT_TYPE):
     step  = int(parts[1])
     cidx  = int(parts[2])
 
-    flow = context.user_data.get("flow")
+    flow = context.user_data.get("flow") or load_flow(q.from_user.id)
     if not flow:
-        await q.answer("❌ انتهت الجلسة", show_alert=True); return
+        await q.answer("❌ انتهت الجلسة، اضغط /start", show_alert=True); return
+    context.user_data["flow"] = flow
 
     opt    = flow["options"][step]
     choice = opt["choices"][cidx]
     flow["answers"][opt["question"]] = choice
     flow["step"] = step + 1
+    save_flow(q.from_user.id, flow)
 
     # لو اختار "على إيميلك" — اطلب الإيميل تلقائياً
     choice_lower = choice.strip()
     EMAIL_TRIGGERS = ["على إيميلك", "ايميلي", "إيميلي", "my email", "my account"]
     if any(t in choice_lower for t in EMAIL_TRIGGERS):
         context.user_data[AWAITING_INPUT] = {"field": "email", "label": "📧 أدخل إيميلك:"}
+        db.set_user_state(q.from_user.id, AWAITING_INPUT + ":email")
         await q.edit_message_text(
             "📧 *أدخل إيميلك:*",
             parse_mode="Markdown",
@@ -291,8 +310,22 @@ async def cb_plan_option(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def handle_input_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """يستقبل نص المستخدم لأي حقل ديناميكي مع validation"""
+    uid      = update.effective_user.id
     awaiting = context.user_data.get(AWAITING_INPUT)
     flow     = context.user_data.get("flow")
+
+    # استرجاع من DB لو context فارغ
+    if not flow:
+        flow = load_flow(uid)
+        if flow:
+            context.user_data["flow"] = flow
+
+    if not awaiting:
+        state = db.get_user_state(uid)
+        if state and state.startswith(AWAITING_INPUT + ":"):
+            field = state.split(":", 1)[1]
+            awaiting = {"field": field}
+            context.user_data[AWAITING_INPUT] = awaiting
 
     if awaiting and flow:
         field = awaiting["field"]
@@ -322,6 +355,8 @@ async def handle_input_response(update: Update, context: ContextTypes.DEFAULT_TY
         flow["inputs"][field] = value
         flow["step"] += 1
         context.user_data.pop(AWAITING_INPUT, None)
+        db.clear_user_state(uid)
+        save_flow(uid, flow)
 
         plan = db.get_plan(flow["plan_id"])
         await _ask_next_option(update.message, context, lang)
@@ -912,4 +947,3 @@ def register_handlers(app: Application):
 async def _cmd_admin_shortcut(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from admin_wizard import cmd_admin
     await cmd_admin(update, context)
-
