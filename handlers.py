@@ -230,8 +230,17 @@ async def cb_plan_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def _ask_next_option(q_or_msg, context, lang, prefix_text=""):
-    flow    = context.user_data["flow"]
-    options = flow["options"]
+    flow = context.user_data.get("flow")
+    if not flow:
+        uid  = q_or_msg.from_user.id if hasattr(q_or_msg, "from_user") else q_or_msg.chat.id
+        flow = load_flow(uid)
+        if not flow:
+            return
+        context.user_data["flow"] = flow
+
+    # دايماً نقرأ الخيارات من الـ plan مباشرة (مش من الـ flow القديم)
+    options = db.get_plan_options(flow["plan_id"])
+    flow["options"] = options
     step    = flow["step"]
 
     if step >= len(options):
@@ -947,3 +956,4 @@ def register_handlers(app: Application):
 async def _cmd_admin_shortcut(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from admin_wizard import cmd_admin
     await cmd_admin(update, context)
+
