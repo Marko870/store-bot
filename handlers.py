@@ -189,6 +189,32 @@ async def cb_service_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #   تفاصيل الخطة + الخيارات الديناميكية
 # ══════════════════════════════════════════
 
+
+
+async def cb_variant_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    lang       = get_lang(q.from_user.id)
+    variant_id = int(q.data.split("_")[1])
+    plans      = db.get_plans_by_variant(variant_id)
+
+    if not plans:
+        await q.answer("لا توجد خطط لهذا النوع حالياً", show_alert=True); return
+
+    svc_id   = plans[0]["service_id"]
+    svc      = db.get_service(svc_id)
+    svc_name = svc["name_ar"] if lang == "ar" else svc["name_en"]
+    # نجيب اسم الـ variant
+    variants = db.get_variants(svc_id)
+    var_name = next((v["name_ar"] for v in variants if v["id"] == variant_id), "")
+
+    text = "🔵 *" + svc_name + "*\n🗂️ *" + var_name + "*"
+    btns = [[InlineKeyboardButton(
+        f"📦 {p['name_ar'] if lang=='ar' else p['name_en']} — {p['price']} USDT",
+        callback_data=f"plan_{p['id']}"
+    )] for p in plans]
+    btns.append([InlineKeyboardButton(t("back", lang), callback_data=f"svc_{svc_id}")])
+    await q.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
+
 async def cb_plan_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     lang    = get_lang(q.from_user.id)
@@ -920,6 +946,7 @@ def register_handlers(app: Application):
     app.add_handler(CallbackQueryHandler(cb_set_lang,       pattern="^lang_(ar|en)$"))
     app.add_handler(CallbackQueryHandler(cb_services,       pattern="^services$"))
     app.add_handler(CallbackQueryHandler(cb_service_detail, pattern=r"^svc_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_variant_detail, pattern=r"^variant_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_plan_detail,    pattern=r"^plan_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_plan_option,    pattern=r"^opt_\d+_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_checkout,       pattern=r"^checkout_\d+$"))
@@ -939,6 +966,9 @@ def register_handlers(app: Application):
     # Callbacks لوحة الأدمن — كانت ناقصة
     from admin_wizard import (cb_list_services, cb_admin_back, cb_orders, cb_tickets,
                               cb_quickdel_svc, cb_quickdel_confirm)
+    app.add_handler(CallbackQueryHandler(
+        lambda u, c: __import__("admin_wizard").wiz_variants_start(u, c),
+        pattern="^wiz_variants$"))
     app.add_handler(CallbackQueryHandler(cb_list_services,    pattern="^wiz_list$"))
     app.add_handler(CallbackQueryHandler(cb_admin_back,       pattern="^admin_back$"))
     app.add_handler(CallbackQueryHandler(cb_orders,           pattern="^wiz_orders$"))
