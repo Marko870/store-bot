@@ -70,7 +70,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # مستخدم جديد — اسأله عن دولته
     if is_new:
-        context.user_data[AWAITING_COUNTRY] = True
+        context.application.user_data.setdefault(user.id, {})[AWAITING_COUNTRY] = True
         text = f"👋 أهلاً *{user.first_name}*! مرحباً بك في Nova Plus 🛍️\n\nقبل أن نبدأ، من أي دولة أنت؟\n_مثال: سوريا، السعودية، الإمارات_"
         if update.message:
             await update.message.reply_text(text, parse_mode="Markdown")
@@ -695,7 +695,7 @@ async def cb_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cb_edit_country(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     lang = get_lang(q.from_user.id)
-    context.user_data[AWAITING_COUNTRY] = True
+    context.application.user_data.setdefault(q.from_user.id, {})[AWAITING_COUNTRY] = True
     await q.edit_message_text(
         "🌍 *تعديل الدولة*\n\nأرسل اسم دولتك:",
         parse_mode="Markdown",
@@ -780,12 +780,14 @@ async def cb_reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def handle_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not update.message: return
 
-    # ٠. مستخدم جديد — رد على سؤال الدولة
-    if context.user_data.get(AWAITING_COUNTRY) and update.message.text:
+    # ٠. رد على سؤال الدولة (مستخدم جديد أو تعديل)
+    uid = update.effective_user.id
+    udata = context.application.user_data.get(uid, {})
+    if udata.get(AWAITING_COUNTRY) and update.message.text:
         country = update.message.text.strip()
-        db.set_user_country(update.effective_user.id, country)
-        context.user_data.pop(AWAITING_COUNTRY, None)
-        lang = get_lang(update.effective_user.id)
+        db.set_user_country(uid, country)
+        context.application.user_data.get(uid, {}).pop(AWAITING_COUNTRY, None)
+        lang = get_lang(uid)
         kb = InlineKeyboardMarkup([
             [InlineKeyboardButton("🛒 الخدمات | Services",  callback_data="services"),
              InlineKeyboardButton("📋 اشتراكاتي | My Subs", callback_data="my_subs")],
