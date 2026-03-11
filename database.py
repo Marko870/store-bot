@@ -68,9 +68,13 @@ class Database:
                     joined_at   TIMESTAMP DEFAULT NOW(),
                     is_banned   INTEGER DEFAULT 0
                 );
-                -- إضافة عمود state لو ما موجود (للقواعد القديمة)
+                -- إضافة أعمدة جديدة لو ما موجودة (للقواعد القديمة)
                 DO $$ BEGIN
                     ALTER TABLE users ADD COLUMN IF NOT EXISTS state TEXT DEFAULT NULL;
+                EXCEPTION WHEN duplicate_column THEN NULL;
+                END $$;
+                DO $$ BEGIN
+                    ALTER TABLE users ADD COLUMN IF NOT EXISTS flow TEXT DEFAULT NULL;
                 EXCEPTION WHEN duplicate_column THEN NULL;
                 END $$;
 
@@ -198,6 +202,21 @@ class Database:
 
     def clear_user_state(self, uid):
         self.execute("UPDATE users SET state=NULL WHERE id=%s", (uid,))
+
+    def save_flow(self, uid, flow: dict):
+        import json
+        self.execute("UPDATE users SET flow=%s WHERE id=%s", (json.dumps(flow), uid))
+
+    def get_flow(self, uid):
+        import json
+        r = self.fetchone("SELECT flow FROM users WHERE id=%s", (uid,))
+        if r and r.get("flow"):
+            try: return json.loads(r["flow"])
+            except: return None
+        return None
+
+    def clear_flow(self, uid):
+        self.execute("UPDATE users SET flow=NULL WHERE id=%s", (uid,))
 
     def get_user(self, uid):
         return self.fetchone("SELECT * FROM users WHERE id=%s", (uid,))
