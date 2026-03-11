@@ -227,10 +227,28 @@ async def wiz_add_plan_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 async def plan_svc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    context.user_data["wiz"]["svc_id"] = int(q.data.split("_")[1])
-    await q.edit_message_text("أرسل *اسم الخطة بالعربي*:\nمثال: شهر واحد، شحن 500 ل.س، بيع 10 USDT",
-        parse_mode="Markdown", reply_markup=cancel_kb())
+    svc_id = int(q.data.split("_")[1])
+    context.user_data["wiz"]["svc_id"] = svc_id
+    context.user_data["wiz"]["variant_id"] = None
+    variants = db.get_variants(svc_id)
+    if variants:
+        btns = [[InlineKeyboardButton(v["name_ar"], callback_data="planvar_" + str(v["id"]))] for v in variants]
+        btns.append([InlineKeyboardButton("بدون نوع", callback_data="planvar_0")])
+        btns.append([InlineKeyboardButton("الغاء", callback_data="wizard_cancel")])
+        await q.edit_message_text("اختر نوع الخطة:", reply_markup=InlineKeyboardMarkup(btns))
+        return PLAN_NAME_AR
+    await q.edit_message_text("ارسل اسم الخطة بالعربي:",
+        reply_markup=cancel_kb())
     return PLAN_NAME_AR
+
+async def plan_variant(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    val = q.data.split("_")[1]
+    context.user_data["wiz"]["variant_id"] = None if val == "0" else int(val)
+    await q.edit_message_text("ارسل اسم الخطة بالعربي:",
+        reply_markup=cancel_kb())
+    return PLAN_NAME_AR
+
 
 async def plan_name_ar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["wiz"]["name_ar"] = update.message.text
