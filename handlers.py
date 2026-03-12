@@ -1173,12 +1173,14 @@ async def cb_recharge_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE
     usdt_addr = cfg.USDT_ADDRESS
     await q.edit_message_text(
         "تعليمات الدفع:\n\n"
-        "ارسل " + str(usdt) + " USDT على المحفظة:\n"
+        "المبلغ:\n"
+        "`" + str(usdt) + "`\n\n"
+        "عنوان المحفظة:\n"
         "`" + usdt_addr + "`\n\n"
-        "ثم اضغط 'ارسلت' لتأكيد الطلب.",
+        "اضغط على المبلغ أو العنوان لنسخه، ثم اضغط أرسلت بعد الدفع.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("ارسلت", callback_data="rchpaid_" + str(order_id))]
+            [InlineKeyboardButton("✅ أرسلت", callback_data="rchpaid_" + str(order_id))]
         ]))
 
 
