@@ -31,11 +31,15 @@ def validate_email(email: str) -> bool:
     return bool(re.match(pattern, email)) and len(email) <= 254
 
 def validate_phone(phone: str) -> bool:
-    """التحقق من صحة رقم الهاتف مع رمز الدولة"""
-    # يقبل: +963xxxxxxxxx أو 00963xxxxxxxxx
-    pattern = r'^(\+|00)[1-9]\d{6,14}$'
-    cleaned = phone.replace(' ', '').replace('-', '')
-    return bool(re.match(pattern, cleaned))
+    cleaned = phone.replace(" ", "").replace("-", "")
+    patterns = [
+        r"^09\d{8}$",
+        r"^9\d{8}$",
+        r"^\+963\d{9}$",
+        r"^00963\d{9}$",
+        r"^(\+|00)[1-9]\d{6,14}$",
+    ]
+    return any(re.match(p, cleaned) for p in patterns)
 
 
 
