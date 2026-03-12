@@ -953,7 +953,11 @@ async def handle_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
             context.user_data.pop("replying_ticket", None)
             return
 
-    # ٣. إدخال ديناميكي (رقم هاتف، كمية، إلخ)
+    # ٣. نصوص التعبئة
+    if await handle_recharge_text(update, context):
+        return
+
+    # ٤. إدخال ديناميكي (رقم هاتف، كمية، إلخ)
     if await handle_input_response(update, context):
         return
 
