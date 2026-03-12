@@ -147,47 +147,57 @@ async def cb_service_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     lang   = get_lang(q.from_user.id)
     svc_id = int(q.data.split("_")[1])
     svc    = db.get_service(svc_id)
-    plans  = db.get_plans(svc_id)
 
     if not svc:
         await q.answer("❌", show_alert=True); return
 
-    name = svc["name_ar"] if lang == "ar" else svc["name_en"]
-    desc = svc.get("description_ar", "") if lang == "ar" else svc.get("description_en", "")
     type_name = svc.get("type_name", "subscription")
 
-    text = f"🔵 *{name}*"
-    if desc:
-        text += f"\n\n{desc}"
+    # خدمة التعبئة — flow خاص
+    if type_name == "recharge":
+        await cb_recharge_start(update, context)
+        return
 
-    # للخدمات التبادلية — اعرض سعر الصرف
+    name = svc["name_ar"] if lang == "ar" else svc["name_en"]
+    desc = svc.get("description_ar", "") if lang == "ar" else svc.get("description_en", "")
+    text      = "🔵 *" + name + "*"
+    if desc:
+        text += "\n\n" + desc
+
     if type_name == "exchange":
         rate = db.get_exchange_rate(svc_id)
         if rate:
-            text += f"\n\n💱 سعر الصرف: `1 {rate['unit']} = {rate['rate']:,.0f} ل.س`"
-            text += f"\n🕐 آخر تحديث: {fmt_date(rate['updated_at'])}"
-
-    if not plans:
-        btns = [[InlineKeyboardButton(t("back", lang), callback_data="services")]]
-        await q.edit_message_text(text + "\n\n_(لا توجد خطط متاحة حالياً)_",
-                                   parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
-        return
+            text += "\n\n💱 سعر الصرف: `1 " + rate["unit"] + " = " + f"{rate['rate']:,.0f}" + " ل.س`"
 
     btns = []
-    for p in plans:
-        pname = p["name_ar"] if lang == "ar" else p["name_en"]
-        btns.append([InlineKeyboardButton(
-            f"📦 {pname} — {p['price']} USDT",
-            callback_data=f"plan_{p['id']}"
-        )])
+
+    # لو في variants — اعرضهم أولاً
+    variants = db.get_variants(svc_id)
+    if variants:
+        for v in variants:
+            vname = v["name_ar"] if lang == "ar" else v.get("name_en", v["name_ar"])
+            btns.append([InlineKeyboardButton("🗂️ " + vname, callback_data="variant_" + str(v["id"]))])
+        # خطط بدون variant
+        direct = db.get_plans_no_variant(svc_id)
+        for p in direct:
+            pname = p["name_ar"] if lang == "ar" else p["name_en"]
+            btns.append([InlineKeyboardButton("📦 " + pname + " — " + str(p["price"]) + " USDT",
+                callback_data="plan_" + str(p["id"]))])
+    else:
+        # لا variants — اعرض الخطط مباشرة
+        plans = db.get_plans(svc_id)
+        if not plans:
+            btns = [[InlineKeyboardButton(t("back", lang), callback_data="services")]]
+            await q.edit_message_text(text + "\n\n_(لا توجد خطط متاحة حالياً)_",
+                parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
+            return
+        for p in plans:
+            pname = p["name_ar"] if lang == "ar" else p["name_en"]
+            btns.append([InlineKeyboardButton("📦 " + pname + " — " + str(p["price"]) + " USDT",
+                callback_data="plan_" + str(p["id"]))])
 
     btns.append([InlineKeyboardButton(t("back", lang), callback_data="services")])
     await q.edit_message_text(text, parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
-
-
-# ══════════════════════════════════════════
-#   تفاصيل الخطة + الخيارات الديناميكية
-# ══════════════════════════════════════════
 
 
 
@@ -753,9 +763,38 @@ async def cb_profile(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
     await q.edit_message_text(text, parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("🌍 تعديل الدولة", callback_data="edit_country")],
-            [InlineKeyboardButton(t("back", lang),   callback_data="main_menu")]
+            [InlineKeyboardButton("🌍 تعديل الدولة",   callback_data="edit_country")],
+            [InlineKeyboardButton("📋 سجل التعبئة",   callback_data="recharge_history")],
+            [InlineKeyboardButton(t("back", lang),     callback_data="main_menu")]
         ]))
+
+
+async def cb_recharge_history(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid    = q.from_user.id
+    lang   = get_lang(uid)
+    orders = db.get_user_recharge_history(uid, limit=10)
+
+    if not orders:
+        await q.edit_message_text(
+            "لا توجد طلبات تعبئة سابقة.",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("رجوع", callback_data="profile")
+            ]]))
+        return
+
+    STATUS_EMOJI = {"pending": "⏳", "completed": "✅", "rejected": "❌"}
+    lines = ["سجل طلبات التعبئة:\n"]
+    for o in orders:
+        emoji = STATUS_EMOJI.get(o["status"], "•")
+        lines.append(
+            emoji + " " + o["svc_ar"] + " — " +
+            f"{o['amount_local']:,.0f}" + " ل.س" +
+            " (" + (o.get("phone_number") or "—") + ")" +
+            " | " + fmt_date(o["created_at"])
+        )
+    await q.edit_message_text("\n".join(lines),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("رجوع", callback_data="profile")]]))
 
 
 # ══════════════════════════════════════════
@@ -927,6 +966,289 @@ async def handle_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #   تسجيل الـ Handlers
 # ══════════════════════════════════════════
 
+
+# ══════════════════════════════════════════
+#   خدمة التعبئة / سيرياتيل كاش
+# ══════════════════════════════════════════
+
+async def cb_recharge_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """أول خطوة: اظهار سعر الصرف + المبالغ الجاهزة"""
+    q = update.callback_query; await q.answer()
+    lang   = get_lang(q.from_user.id)
+    svc_id = int(q.data.split("_")[1])
+    svc    = db.get_service(svc_id)
+    if not svc:
+        await q.answer("خطأ", show_alert=True); return
+
+    rate    = db.get_recharge_rate(svc_id)
+    presets = db.get_recharge_presets(svc_id)
+    limits  = db.get_service_limits(svc_id)
+
+    svc_name = svc["name_ar"] if lang == "ar" else svc["name_en"]
+
+    if not rate:
+        await q.answer("الخدمة غير متاحة حالياً", show_alert=True); return
+
+    text = svc_name + "\n\n"
+    text += "سعر الصرف الحالي:\n"
+    text += "1 USDT = " + f"{rate:,.0f}" + " ل.س\n\n"
+    if limits:
+        if limits.get("min_amount"):
+            text += "الحد الادنى: " + f"{limits['min_amount']:,.0f}" + " ل.س\n"
+        if limits.get("max_amount"):
+            text += "الحد الاقصى: " + f"{limits['max_amount']:,.0f}" + " ل.س\n"
+    text += "\nاختر المبلغ او ادخل يدوياً:"
+
+    btns = []
+    if presets:
+        row = []
+        for i, p in enumerate(presets):
+            row.append(InlineKeyboardButton(
+                f"{int(p['rate']):,} ل.س",
+                callback_data="rchamt_" + str(svc_id) + "_" + str(int(p["rate"]))
+            ))
+            if len(row) == 2:
+                btns.append(row); row = []
+        if row: btns.append(row)
+
+    btns.append([InlineKeyboardButton("✏️ مبلغ يدوي", callback_data="rchamtcustom_" + str(svc_id))])
+    btns.append([InlineKeyboardButton(t("back", lang), callback_data="services")])
+
+    save_flow(q.from_user.id, {"svc_id": svc_id, "step": "amount"})
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(btns))
+
+
+async def cb_recharge_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """اختيار مبلغ جاهز"""
+    q = update.callback_query; await q.answer()
+    uid    = q.from_user.id
+    lang   = get_lang(uid)
+    parts  = q.data.split("_")
+    svc_id = int(parts[1])
+    amount = int(parts[2])
+
+    rate = db.get_recharge_rate(svc_id)
+    usdt = round(amount / rate, 4)
+
+    text = (
+        "ملخص الطلب:\n\n"
+        "المبلغ: " + f"{amount:,}" + " ل.س\n"
+        "ستدفع: " + str(usdt) + " USDT\n\n"
+        "ادخل رقم هاتفك:"
+    )
+    save_flow(uid, {"svc_id": svc_id, "amount": amount, "usdt": usdt, "step": "phone"})
+    db.set_user_state(uid, "RECHARGE_PHONE")
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
+        [InlineKeyboardButton("الغاء", callback_data="services")]
+    ]))
+
+
+async def cb_recharge_custom_amount(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """طلب مبلغ يدوي"""
+    q = update.callback_query; await q.answer()
+    uid    = q.from_user.id
+    svc_id = int(q.data.split("_")[1])
+    save_flow(uid, {"svc_id": svc_id, "step": "custom_amount"})
+    db.set_user_state(uid, "RECHARGE_AMOUNT")
+    limits = db.get_service_limits(svc_id)
+    hint = ""
+    if limits:
+        if limits.get("min_amount"): hint += " (الحد الادنى: " + f"{limits['min_amount']:,.0f}" + " ل.س)"
+        if limits.get("max_amount"): hint += " (الحد الاقصى: " + f"{limits['max_amount']:,.0f}" + " ل.س)"
+    await q.edit_message_text(
+        "ادخل المبلغ بالليرة السورية:" + hint,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("الغاء", callback_data="services")]]))
+
+
+async def handle_recharge_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """معالجة النصوص المتعلقة بالتعبئة"""
+    uid   = update.effective_user.id
+    state = db.get_user_state(uid)
+    if state not in ("RECHARGE_AMOUNT", "RECHARGE_PHONE"):
+        return False
+
+    flow = load_flow(uid)
+    lang = get_lang(uid)
+    svc_id = flow.get("svc_id")
+
+    if state == "RECHARGE_AMOUNT":
+        text = update.message.text.strip().replace(",", "")
+        try:
+            amount = float(text)
+        except Exception:
+            await update.message.reply_text("ارسل رقماً صحيحاً مثل: 1000")
+            return True
+        limits = db.get_service_limits(svc_id)
+        if limits:
+            mn = limits.get("min_amount") or 0
+            mx = limits.get("max_amount") or 0
+            if mn and amount < mn:
+                await update.message.reply_text("الحد الادنى هو " + f"{mn:,.0f}" + " ل.س")
+                return True
+            if mx and amount > mx:
+                await update.message.reply_text("الحد الاقصى هو " + f"{mx:,.0f}" + " ل.س")
+                return True
+        rate = db.get_recharge_rate(svc_id)
+        usdt = round(amount / rate, 4)
+        save_flow(uid, {"svc_id": svc_id, "amount": amount, "usdt": usdt, "step": "phone"})
+        db.set_user_state(uid, "RECHARGE_PHONE")
+        await update.message.reply_text(
+            "المبلغ: " + f"{amount:,.0f}" + " ل.س = " + str(usdt) + " USDT\n\nادخل رقم هاتفك:",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("الغاء", callback_data="services")]]))
+        return True
+
+    if state == "RECHARGE_PHONE":
+        phone = update.message.text.strip()
+        if not validate_phone(phone):
+            await update.message.reply_text("الرقم غير صحيح. مثال: 0991234567 او +963991234567")
+            return True
+
+        # تحقق من الحد اليومي
+        limits = db.get_service_limits(svc_id)
+        if limits and limits.get("daily_limit"):
+            count = db.count_today_recharge_orders(uid, svc_id)
+            if count >= limits["daily_limit"]:
+                await update.message.reply_text(
+                    "وصلت للحد اليومي من الطلبات (" + str(limits["daily_limit"]) + " طلبات). حاول غداً.")
+                db.clear_user_state(uid)
+                clear_flow(uid)
+                return True
+
+        amount = flow.get("amount", 0)
+        usdt   = flow.get("usdt", 0)
+        svc    = db.get_service(svc_id)
+
+        # تأكيد نهائي
+        confirm_text = (
+            "تأكيد الطلب:\n\n"
+            "الخدمة: " + svc["name_ar"] + "\n"
+            "المبلغ: " + f"{amount:,.0f}" + " ل.س\n"
+            "ستدفع: " + str(usdt) + " USDT\n"
+            "الرقم: " + phone
+        )
+        save_flow(uid, {"svc_id": svc_id, "amount": amount, "usdt": usdt, "phone": phone, "step": "confirm"})
+        db.set_user_state(uid, "RECHARGE_CONFIRM")
+        await update.message.reply_text(
+            confirm_text,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("تأكيد", callback_data="rchconfirm_yes"),
+                 InlineKeyboardButton("الغاء", callback_data="rchconfirm_no")]
+            ]))
+        return True
+
+    return False
+
+
+async def cb_recharge_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    uid = q.from_user.id
+
+    if q.data == "rchconfirm_no":
+        db.clear_user_state(uid)
+        clear_flow(uid)
+        await q.edit_message_text("تم الالغاء.")
+        return
+
+    flow   = load_flow(uid)
+    svc_id = flow["svc_id"]
+    amount = flow["amount"]
+    usdt   = flow["usdt"]
+    phone  = flow["phone"]
+
+    from config import Config
+    cfg = Config()
+
+    order_id = db.create_recharge_order(uid, svc_id, usdt, amount, phone)
+    db.clear_user_state(uid)
+    clear_flow(uid)
+
+    usdt_addr = cfg.USDT_ADDRESS
+    await q.edit_message_text(
+        "تعليمات الدفع:\n\n"
+        "ارسل " + str(usdt) + " USDT على المحفظة:\n"
+        "`" + usdt_addr + "`\n\n"
+        "ثم اضغط 'ارسلت' لتأكيد الطلب.",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("ارسلت", callback_data="rchpaid_" + str(order_id))]
+        ]))
+
+
+async def cb_recharge_paid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    order_id = int(q.data.split("_")[1])
+    await q.edit_message_text(
+        "جاري التنفيذ...\n\nسنعلمك عند اكتمال التعبئة.")
+
+    # إشعار الأدمن
+    from config import Config
+    cfg = Config()
+    order = db.fetchone("""
+        SELECT o.*, u.full_name, u.username, s.name_ar as svc_ar
+        FROM orders o JOIN users u ON o.user_id=u.id JOIN services s ON o.service_id=s.id
+        WHERE o.id=%s
+    """, (order_id,))
+    if order:
+        admin_text = (
+            "طلب تعبئة جديد #" + str(order_id) + "\n\n"
+            "المستخدم: " + order["full_name"] + " (@" + (order.get("username") or "—") + ")\n"
+            "الخدمة: " + order["svc_ar"] + "\n"
+            "المبلغ: " + f"{order['amount_local']:,.0f}" + " ل.س\n"
+            "USDT: " + str(order["amount"]) + "\n"
+            "الرقم: `" + (order.get("phone_number") or "—") + "`"
+        )
+        for admin_id in cfg.ADMIN_IDS:
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=admin_text,
+                    parse_mode="Markdown",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("تم التنفيذ", callback_data="rchdone_" + str(order_id) + "_" + str(order["user_id"])),
+                        InlineKeyboardButton("رفض",        callback_data="rchreject_" + str(order_id) + "_" + str(order["user_id"]))
+                    ]]))
+            except Exception:
+                pass
+
+
+async def cb_recharge_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    parts    = q.data.split("_")
+    order_id = int(parts[1])
+    user_id  = int(parts[2])
+    order    = db.fetchone("SELECT * FROM orders WHERE id=%s", (order_id,))
+    if not order:
+        await q.edit_message_text("الطلب غير موجود"); return
+    db.complete_recharge_order(order_id)
+    await q.edit_message_text("تم تنفيذ الطلب #" + str(order_id))
+    try:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text=(
+                "تمت التعبئة\n\n"
+                "المبلغ: " + f"{order['amount_local']:,.0f}" + " ل.س\n"
+                "الرقم: " + (order.get("phone_number") or "—") + "\n\n"
+                "شكراً لثقتك بنا!"
+            ))
+    except Exception:
+        pass
+
+
+async def cb_recharge_reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    parts    = q.data.split("_")
+    order_id = int(parts[1])
+    user_id  = int(parts[2])
+    db.reject_recharge_order(order_id)
+    await q.edit_message_text("تم رفض الطلب #" + str(order_id))
+    try:
+        await context.bot.send_message(
+            chat_id=user_id,
+            text="تم رفض طلب التعبئة #" + str(order_id) + "\nللاستفسار تواصل مع الدعم.")
+    except Exception:
+        pass
+
+
 def register_handlers(app: Application):
     from admin_wizard import get_wizard_handlers
 
@@ -946,13 +1268,20 @@ def register_handlers(app: Application):
     app.add_handler(CallbackQueryHandler(cb_set_lang,       pattern="^lang_(ar|en)$"))
     app.add_handler(CallbackQueryHandler(cb_services,       pattern="^services$"))
     app.add_handler(CallbackQueryHandler(cb_service_detail, pattern=r"^svc_\d+$"))
-    app.add_handler(CallbackQueryHandler(cb_variant_detail, pattern=r"^variant_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_variant_detail,       pattern=r"^variant_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_recharge_amount,       pattern=r"^rchamt_"))
+    app.add_handler(CallbackQueryHandler(cb_recharge_custom_amount,pattern=r"^rchamtcustom_"))
+    app.add_handler(CallbackQueryHandler(cb_recharge_confirm,      pattern=r"^rchconfirm_"))
+    app.add_handler(CallbackQueryHandler(cb_recharge_paid,         pattern=r"^rchpaid_"))
+    app.add_handler(CallbackQueryHandler(cb_recharge_done,         pattern=r"^rchdone_"))
+    app.add_handler(CallbackQueryHandler(cb_recharge_reject,       pattern=r"^rchreject_"))
     app.add_handler(CallbackQueryHandler(cb_plan_detail,    pattern=r"^plan_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_plan_option,    pattern=r"^opt_\d+_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_checkout,       pattern=r"^checkout_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_send_proof,     pattern=r"^sendproof_\d+_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_my_subs,        pattern="^my_subs$"))
-    app.add_handler(CallbackQueryHandler(cb_profile,        pattern="^profile$"))
+    app.add_handler(CallbackQueryHandler(cb_profile,          pattern="^profile$"))
+    app.add_handler(CallbackQueryHandler(cb_recharge_history, pattern="^recharge_history$"))
     app.add_handler(CallbackQueryHandler(cb_support,        pattern="^support$"))
     app.add_handler(CallbackQueryHandler(cb_reply_ticket,   pattern=r"^replyticket_\d+_\d+$"))
 
