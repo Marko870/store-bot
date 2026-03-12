@@ -912,6 +912,8 @@ async def handle_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ١. إثبات دفع (صورة أو ملف)
     if update.message.photo or update.message.document:
+        if await handle_recharge_proof(update, context):
+            return
         if await handle_payment_proof(update, context):
             return
 
@@ -1068,6 +1070,77 @@ async def cb_recharge_custom_amount(update: Update, context: ContextTypes.DEFAUL
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("الغاء", callback_data="services")]]))
 
 
+
+async def handle_recharge_proof(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    uid   = update.effective_user.id
+    state = db.get_user_state(uid)
+    if state != "RECHARGE_PROOF":
+        return False
+
+    flow     = load_flow(uid)
+    order_id = flow.get("order_id")
+    if not order_id:
+        return False
+
+    # احفظ file_id الصورة في الطلب
+    if update.message.photo:
+        file_id = update.message.photo[-1].file_id
+    elif update.message.document:
+        file_id = update.message.document.file_id
+    else:
+        return False
+
+    # حدّث الطلب بـ file_id
+    db.execute(
+        "UPDATE orders SET user_inputs=%s WHERE id=%s",
+        (json.dumps({"proof_file_id": file_id}), order_id)
+    )
+    db.clear_user_state(uid)
+    clear_flow(uid)
+
+    await update.message.reply_text(
+        "✅ تم استلام إشعار الدفع. سنتحقق ونعلمك فور اكتمال التعبئة.")
+
+    # إشعار الأدمن مع الصورة
+    from config import Config
+    cfg = Config()
+    order = db.fetchone("""
+        SELECT o.*, u.full_name, u.username, s.name_ar as svc_ar
+        FROM orders o JOIN users u ON o.user_id=u.id JOIN services s ON o.service_id=s.id
+        WHERE o.id=%s
+    """, (order_id,))
+    if order:
+        admin_text = (
+            "🔔 طلب تعبئة جديد #" + str(order_id) + "\n\n"
+            "👤 " + order["full_name"] + " (@" + (order.get("username") or "—") + ")\n"
+            "📱 " + order["svc_ar"] + "\n"
+            "💵 " + f"{order['amount_local']:,.0f}" + " ل.س\n"
+            "💳 " + str(order["amount"]) + " USDT\n"
+            "📞 `" + (order.get("phone_number") or "—") + "`"
+        )
+        kb = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ تم التنفيذ", callback_data="rchdone_" + str(order_id) + "_" + str(uid)),
+            InlineKeyboardButton("❌ رفض",        callback_data="rchreject_" + str(order_id) + "_" + str(uid))
+        ]])
+        for admin_id in cfg.ADMIN_IDS:
+            try:
+                await context.bot.send_photo(
+                    chat_id=admin_id,
+                    photo=file_id,
+                    caption=admin_text,
+                    parse_mode="Markdown",
+                    reply_markup=kb)
+            except Exception:
+                try:
+                    await context.bot.send_message(
+                        chat_id=admin_id,
+                        text=admin_text,
+                        parse_mode="Markdown",
+                        reply_markup=kb)
+                except Exception:
+                    pass
+    return True
+
 async def handle_recharge_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """معالجة النصوص المتعلقة بالتعبئة"""
     uid   = update.effective_user.id
@@ -1171,16 +1244,18 @@ async def cb_recharge_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE
     clear_flow(uid)
 
     usdt_addr = cfg.USDT_ADDRESS
+    db.set_user_state(uid, "RECHARGE_PROOF")
+    save_flow(uid, {"order_id": order_id, "svc_id": svc_id, "amount": amount, "usdt": usdt, "phone": phone})
     await q.edit_message_text(
         "تعليمات الدفع:\n\n"
         "المبلغ:\n"
         "`" + str(usdt) + "`\n\n"
         "عنوان المحفظة:\n"
         "`" + usdt_addr + "`\n\n"
-        "اضغط على المبلغ أو العنوان لنسخه، ثم اضغط أرسلت بعد الدفع.",
+        "بعد الدفع، أرسل صورة إشعار التحويل هنا.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("✅ أرسلت", callback_data="rchpaid_" + str(order_id))]
+            [InlineKeyboardButton("❌ إلغاء", callback_data="rchconfirm_no")]
         ]))
 
 
