@@ -94,16 +94,29 @@ class Database:
                     type_id        INTEGER REFERENCES service_types(id),
                     category       TEXT DEFAULT 'digital',
                     min_amount     REAL DEFAULT 0,
+                    max_amount     REAL DEFAULT 0,
+                    daily_limit    INTEGER DEFAULT 0,
                     is_active      INTEGER DEFAULT 1
                 );
+                DO $$ BEGIN
+                    ALTER TABLE services ADD COLUMN IF NOT EXISTS max_amount REAL DEFAULT 0;
+                EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+                DO $$ BEGIN
+                    ALTER TABLE services ADD COLUMN IF NOT EXISTS daily_limit INTEGER DEFAULT 0;
+                EXCEPTION WHEN duplicate_column THEN NULL; END $$;
 
                 CREATE TABLE IF NOT EXISTS service_variants (
-                    id         SERIAL PRIMARY KEY,
-                    service_id INTEGER REFERENCES services(id) ON DELETE CASCADE,
-                    name_ar    TEXT NOT NULL,
-                    name_en    TEXT NOT NULL,
-                    is_active  INTEGER DEFAULT 1
+                    id            SERIAL PRIMARY KEY,
+                    service_id    INTEGER REFERENCES services(id) ON DELETE CASCADE,
+                    name_ar       TEXT NOT NULL,
+                    name_en       TEXT NOT NULL,
+                    extra_options TEXT DEFAULT '[]',
+                    is_active     INTEGER DEFAULT 1
                 );
+                DO $$ BEGIN
+                    ALTER TABLE service_variants ADD COLUMN IF NOT EXISTS extra_options TEXT DEFAULT '[]';
+                EXCEPTION WHEN duplicate_column THEN NULL;
+                END $$;
                 DO $$ BEGIN
                     ALTER TABLE plans ADD COLUMN IF NOT EXISTS variant_id INTEGER REFERENCES service_variants(id) ON DELETE SET NULL;
                 EXCEPTION WHEN duplicate_column THEN NULL;
@@ -131,18 +144,30 @@ class Database:
                 );
 
                 CREATE TABLE IF NOT EXISTS orders (
-                    id           SERIAL PRIMARY KEY,
-                    user_id      BIGINT REFERENCES users(id),
-                    plan_id      INTEGER REFERENCES plans(id),
-                    service_id   INTEGER REFERENCES services(id),
-                    amount       REAL NOT NULL,
-                    currency     TEXT DEFAULT 'USDT',
-                    status       TEXT DEFAULT 'pending',
-                    user_options TEXT DEFAULT '{}',
-                    user_inputs  TEXT DEFAULT '{}',
-                    created_at   TIMESTAMP DEFAULT NOW(),
-                    paid_at      TIMESTAMP
+                    id            SERIAL PRIMARY KEY,
+                    user_id       BIGINT REFERENCES users(id),
+                    plan_id       INTEGER REFERENCES plans(id),
+                    service_id    INTEGER REFERENCES services(id),
+                    amount        REAL NOT NULL,
+                    amount_local  REAL DEFAULT 0,
+                    phone_number  TEXT DEFAULT '',
+                    currency      TEXT DEFAULT 'USDT',
+                    status        TEXT DEFAULT 'pending',
+                    order_type    TEXT DEFAULT 'subscription',
+                    user_options  TEXT DEFAULT '{}',
+                    user_inputs   TEXT DEFAULT '{}',
+                    created_at    TIMESTAMP DEFAULT NOW(),
+                    paid_at       TIMESTAMP
                 );
+                DO $$ BEGIN
+                    ALTER TABLE orders ADD COLUMN IF NOT EXISTS amount_local REAL DEFAULT 0;
+                EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+                DO $$ BEGIN
+                    ALTER TABLE orders ADD COLUMN IF NOT EXISTS phone_number TEXT DEFAULT '';
+                EXCEPTION WHEN duplicate_column THEN NULL; END $$;
+                DO $$ BEGIN
+                    ALTER TABLE orders ADD COLUMN IF NOT EXISTS order_type TEXT DEFAULT 'subscription';
+                EXCEPTION WHEN duplicate_column THEN NULL; END $$;
 
                 CREATE TABLE IF NOT EXISTS subscriptions (
                     id          SERIAL PRIMARY KEY,
@@ -173,9 +198,9 @@ class Database:
             return
         cur.execute("""
             INSERT INTO service_types (name, label_ar, label_en) VALUES
-            ('subscription', 'اشتراك رقمي', 'Digital Subscription'),
-            ('recharge',     'شحن رصيد',    'Recharge'),
-            ('exchange',     'تحويل عملات', 'Currency Exchange')
+            ('subscription', 'اشتراك رقمي',              'Digital Subscription'),
+            ('recharge',     'تعبئة رصيد / سيرياتيل كاش', 'Recharge'),
+            ('exchange',     'تحويل عملات',               'Currency Exchange')
         """)
 
     # ══════════════════════════════
@@ -269,12 +294,116 @@ class Database:
             WHERE s.is_active=1 ORDER BY s.id
         """)
 
-    # ══ Variants ══
-    def add_variant(self, service_id, name_ar, name_en) -> int:
+    # ══ Recharge ══
+
+    def get_recharge_presets(self, service_id):
+        """خيارات المبالغ الجاهزة — من exchange_rates بـ unit=SYP"""
+        return self.fetch(
+            "SELECT * FROM exchange_rates WHERE service_id=%s AND unit='SYP' ORDER BY rate",
+            (service_id,))
+
+    def set_recharge_preset(self, service_id, amount_syp, amount_usdt):
+        """يضيف أو يحدث خيار مبلغ جاهز"""
+        existing = self.fetchone(
+            "SELECT id FROM exchange_rates WHERE service_id=%s AND unit='SYP' AND rate=%s",
+            (service_id, amount_syp))
+        if existing:
+            self.execute(
+                "UPDATE exchange_rates SET rate=%s WHERE service_id=%s AND unit='SYP' AND id=%s",
+                (amount_syp, service_id, existing["id"]))
+        else:
+            self.execute(
+                "INSERT INTO exchange_rates (service_id, rate, unit) VALUES (%s,%s,'SYP')",
+                (service_id, amount_syp))
+
+    def get_recharge_rate(self, service_id):
+        """سعر الصرف الرئيسي: كم ليرة = 1 USDT"""
+        r = self.fetchone(
+            "SELECT rate FROM exchange_rates WHERE service_id=%s AND unit='USDT' ORDER BY updated_at DESC LIMIT 1",
+            (service_id,))
+        return r["rate"] if r else None
+
+    def get_service_limits(self, service_id):
+        """الحد الأدنى والأقصى اليومي"""
+        return self.fetchone(
+            "SELECT min_amount, max_amount, daily_limit FROM services WHERE id=%s",
+            (service_id,))
+
+    def count_today_recharge_orders(self, user_id, service_id):
+        """عدد طلبات التعبئة اليوم لهذا المستخدم"""
+        r = self.fetchone("""
+            SELECT COUNT(*) as cnt FROM orders
+            WHERE user_id=%s AND service_id=%s AND order_type='recharge'
+            AND created_at >= CURRENT_DATE
+        """, (user_id, service_id))
+        return r["cnt"] if r else 0
+
+    def create_recharge_order(self, user_id, service_id, amount_usdt, amount_local, phone):
+        return self.execute_returning("""
+            INSERT INTO orders
+                (user_id, service_id, amount, amount_local, phone_number, order_type, status)
+            VALUES (%s, %s, %s, %s, %s, 'recharge', 'pending')
+            RETURNING id
+        """, (user_id, service_id, amount_usdt, amount_local, phone))
+
+    def get_pending_recharge_orders(self):
+        return self.fetch("""
+            SELECT o.*, u.full_name, u.username,
+                   s.name_ar as svc_ar
+            FROM orders o
+            JOIN users u ON o.user_id = u.id
+            JOIN services s ON o.service_id = s.id
+            WHERE o.order_type='recharge' AND o.status='pending'
+            ORDER BY o.created_at
+        """)
+
+    def complete_recharge_order(self, order_id):
+        self.execute(
+            "UPDATE orders SET status='completed', paid_at=NOW() WHERE id=%s",
+            (order_id,))
+
+    def reject_recharge_order(self, order_id):
+        self.execute(
+            "UPDATE orders SET status='rejected' WHERE id=%s",
+            (order_id,))
+
+    def get_user_recharge_history(self, user_id, limit=10):
+        return self.fetch("""
+            SELECT o.*, s.name_ar as svc_ar
+            FROM orders o
+            JOIN services s ON o.service_id = s.id
+            WHERE o.user_id=%s AND o.order_type='recharge'
+            ORDER BY o.created_at DESC LIMIT %s
+        """, (user_id, limit))
+
+    def update_service_limits(self, service_id, min_amount=None, max_amount=None, daily_limit=None):
+        if min_amount is not None:
+            self.execute("UPDATE services SET min_amount=%s WHERE id=%s", (min_amount, service_id))
+        if max_amount is not None:
+            self.execute("UPDATE services SET max_amount=%s WHERE id=%s", (max_amount, service_id))
+        if daily_limit is not None:
+            self.execute("UPDATE services SET daily_limit=%s WHERE id=%s", (daily_limit, service_id))
+
+        # ══ Variants ══
+    def add_variant(self, service_id, name_ar, name_en, options=None) -> int:
         return self.execute_returning(
-            "INSERT INTO service_variants (service_id, name_ar, name_en) VALUES (%s,%s,%s) RETURNING id",
-            (service_id, name_ar, name_en)
+            "INSERT INTO service_variants (service_id, name_ar, name_en, extra_options) VALUES (%s,%s,%s,%s) RETURNING id",
+            (service_id, name_ar, name_en, json.dumps(options or []))
         )
+
+    def update_variant_options(self, variant_id, options):
+        self.execute("UPDATE service_variants SET extra_options=%s WHERE id=%s",
+                     (json.dumps(options), variant_id))
+
+    def get_variant(self, variant_id):
+        return self.fetchone("SELECT * FROM service_variants WHERE id=%s", (variant_id,))
+
+    def get_variant_options(self, variant_id):
+        r = self.fetchone("SELECT extra_options FROM service_variants WHERE id=%s", (variant_id,))
+        if r and r.get("extra_options"):
+            try: return json.loads(r["extra_options"])
+            except: return []
+        return []
 
     def get_variants(self, service_id):
         return self.fetch(
