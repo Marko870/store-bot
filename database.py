@@ -830,11 +830,45 @@ class Database:
     #   Tickets
     # ══════════════════════════════
 
+    def _ensure_ticket_messages_table(self):
+        with self._conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS ticket_messages (
+                    id         SERIAL PRIMARY KEY,
+                    ticket_id  INTEGER REFERENCES tickets(id) ON DELETE CASCADE,
+                    sender     TEXT NOT NULL,  -- 'user' or 'admin'
+                    message    TEXT NOT NULL,
+                    sent_at    TIMESTAMP DEFAULT NOW()
+                );
+            """)
+            self._conn.commit()
+
     def create_ticket(self, uid, message):
-        return self.execute_returning(
+        self._ensure_ticket_messages_table()
+        ticket_id = self.execute_returning(
             "INSERT INTO tickets (user_id, message) VALUES (%s, %s) RETURNING id",
             (uid, message)
         )
+        if ticket_id:
+            self.execute(
+                "INSERT INTO ticket_messages (ticket_id, sender, message) VALUES (%s, 'user', %s)",
+                (ticket_id, message)
+            )
+        return ticket_id
+
+    def add_ticket_message(self, ticket_id, sender, message):
+        self._ensure_ticket_messages_table()
+        self.execute(
+            "INSERT INTO ticket_messages (ticket_id, sender, message) VALUES (%s, %s, %s)",
+            (ticket_id, sender, message)
+        )
+
+    def get_ticket_messages(self, ticket_id):
+        self._ensure_ticket_messages_table()
+        return self.fetch("""
+            SELECT * FROM ticket_messages
+            WHERE ticket_id=%s ORDER BY sent_at ASC
+        """, (ticket_id,))
 
     def get_open_tickets(self):
         return self.fetch("""
@@ -842,6 +876,55 @@ class Database:
             FROM tickets t JOIN users u ON t.user_id = u.id
             WHERE t.status='open' ORDER BY t.created_at DESC
         """)
+
+    def get_tickets_admin(self, status="open", page=0, per_page=5, search=""):
+        offset = page * per_page
+        conditions = []
+        params = []
+
+        if status == "open":
+            conditions.append("t.status='open'")
+        elif status == "closed":
+            conditions.append("t.status='closed'")
+
+        if search:
+            conditions.append(
+                "(u.username ILIKE %s OR u.full_name ILIKE %s OR CAST(t.id AS TEXT) LIKE %s)"
+            )
+            s = f"%{search}%"
+            params += [s, s, s]
+
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+        rows = self.fetch(f"""
+            SELECT t.id, t.status, t.created_at, t.message,
+                   u.id as user_id, u.username, u.full_name
+            FROM tickets t JOIN users u ON t.user_id = u.id
+            {where}
+            ORDER BY t.created_at DESC
+            LIMIT %s OFFSET %s
+        """, params + [per_page, offset])
+
+        total_row = self.fetchone(f"""
+            SELECT COUNT(*) as c FROM tickets t
+            JOIN users u ON t.user_id = u.id
+            {where}
+        """, params)
+        total = total_row["c"] if total_row else 0
+        return rows or [], total
+
+    def get_ticket_by_id(self, ticket_id):
+        return self.fetchone("""
+            SELECT t.*, u.username, u.full_name, u.id as user_id
+            FROM tickets t JOIN users u ON t.user_id = u.id
+            WHERE t.id=%s
+        """, (ticket_id,))
+
+    def close_ticket(self, ticket_id):
+        self.execute("UPDATE tickets SET status='closed' WHERE id=%s", (ticket_id,))
+
+    def reopen_ticket(self, ticket_id):
+        self.execute("UPDATE tickets SET status='open' WHERE id=%s", (ticket_id,))
 
     def reply_ticket(self, ticket_id, reply):
         self.execute(
@@ -940,3 +1023,4 @@ class Database:
             "new_users": new_users["c"] if new_users else 0,
             "new_subs":  new_subs["c"] if new_subs else 0,
         }
+
