@@ -30,6 +30,7 @@ def cancel_kb():
 (BROADCAST_MSG,) = range(70, 71)
 (VAR_SVC, VAR_NAME_AR, VAR_NAME_EN, VAR_OPTS) = range(80, 84)
 (ORD_MAIN, ORD_SEARCH, ORD_DETAIL, ORD_CONFIRM) = range(100, 104)
+(SUB_MAIN, SUB_SEARCH, SUB_DETAIL, SUB_EXTEND) = range(110, 114)
 PER_PAGE = 5
 (RCH_SVC, RCH_RATE, RCH_PRESETS, RCH_LIMITS) = range(90, 94)
 
@@ -60,8 +61,9 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("📱 إعدادات التعبئة", callback_data="wiz_recharge")],
         [InlineKeyboardButton("🎁 اشتراك يدوي",   callback_data="wiz_mansub"),
          InlineKeyboardButton("⏳ الطلبات",        callback_data="wiz_orders")],
-        [InlineKeyboardButton("🎫 التذاكر",        callback_data="wiz_tickets"),
-         InlineKeyboardButton("📢 إذاعة",          callback_data="wiz_broadcast")],
+        [InlineKeyboardButton("📋 الاشتراكات",    callback_data="wiz_subs"),
+         InlineKeyboardButton("🎫 التذاكر",        callback_data="wiz_tickets")],
+        [InlineKeyboardButton("📢 إذاعة",          callback_data="wiz_broadcast")],
     ])
     if update.message:
         await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
@@ -1509,6 +1511,191 @@ async def rch_collect_limits(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 
+
+
+# ══════════════════════════════════════════════════════
+#   إدارة الاشتراكات — Admin Subscriptions Management
+# ══════════════════════════════════════════════════════
+
+def _sub_status_label(row) -> str:
+    from datetime import datetime
+    if row["status"] == "cancelled":
+        return "❌ ملغى"
+    expires = row["expires_at"]
+    if expires and expires.replace(tzinfo=None) > datetime.now():
+        return "✅ نشط"
+    return "⏰ منتهي"
+
+
+async def cb_subs_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    status = context.user_data.get("sub_status", "all")
+    page   = context.user_data.get("sub_page", 0)
+    search = context.user_data.get("sub_search", "")
+    context.user_data.pop("sub_search_active", None)
+
+    rows, total = db.get_subscriptions_admin(status=status, page=page, per_page=PER_PAGE, search=search)
+    pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
+
+    filters_row = [
+        InlineKeyboardButton("الكل"   + (" ✓" if status == "all"     else ""), callback_data="subfilter_all"),
+        InlineKeyboardButton("نشطة"   + (" ✓" if status == "active"  else ""), callback_data="subfilter_active"),
+        InlineKeyboardButton("منتهية" + (" ✓" if status == "expired" else ""), callback_data="subfilter_expired"),
+    ]
+
+    kbd = [filters_row]
+    for row in rows:
+        label = f"{_sub_status_label(row)} #{row['id']} — {row['username'] or row['full_name'] or row['user_id']} | {row['service_name']}"
+        kbd.append([InlineKeyboardButton(label, callback_data=f"subdetail_{row['id']}")])
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️ السابق", callback_data=f"subpage_{page-1}"))
+    if page < pages - 1:
+        nav.append(InlineKeyboardButton("التالي ▶️", callback_data=f"subpage_{page+1}"))
+    if nav:
+        kbd.append(nav)
+
+    kbd.append([InlineKeyboardButton("🔍 بحث", callback_data="subsearch_start")])
+    kbd.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin_back")])
+
+    search_note = (f"\n🔍 بحث: `{search}`") if search else ""
+    text = f"📋 *الاشتراكات* — {total} إجمالي{search_note}\nالصفحة {page+1}/{pages}"
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kbd), parse_mode="Markdown")
+    return SUB_MAIN
+
+
+async def cb_subs_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    status = q.data.replace("subfilter_", "")
+    context.user_data["sub_status"] = status
+    context.user_data["sub_page"]   = 0
+    context.user_data.pop("sub_search", None)
+    return await cb_subs_main(update, context)
+
+
+async def cb_subs_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    context.user_data["sub_page"] = int(q.data.replace("subpage_", ""))
+    return await cb_subs_main(update, context)
+
+
+async def cb_subs_search_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    context.user_data["sub_search_active"] = True
+    await q.edit_message_text("🔍 أرسل اسم المستخدم أو ID المستخدم أو رقم الاشتراك:")
+    return SUB_SEARCH
+
+
+async def cb_subs_search_handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    context.user_data["sub_search"] = text
+    context.user_data["sub_page"]   = 0
+
+    class _FakeQuery:
+        async def answer(self): pass
+        async def edit_message_text(self, *a, **kw):
+            await update.message.reply_text(*a, **kw)
+        data = "wiz_subs"
+
+    update.callback_query = _FakeQuery()
+    return await cb_subs_main(update, context)
+
+
+async def cb_sub_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    sub_id = int(q.data.replace("subdetail_", ""))
+    context.user_data["sub_id"] = sub_id
+
+    sub = db.get_subscription_by_id(sub_id)
+    if not sub:
+        await q.edit_message_text("❌ الاشتراك غير موجود.")
+        return SUB_MAIN
+
+    import json
+    creds = {}
+    try:
+        creds = json.loads(sub.get("credentials") or "{}")
+    except Exception:
+        pass
+
+    status_label = _sub_status_label(sub)
+    expires = sub["expires_at"].strftime("%Y-%m-%d %H:%M") if sub["expires_at"] else "—"
+    started = sub["started_at"].strftime("%Y-%m-%d") if sub["started_at"] else "—"
+
+    creds_text = ""
+    if creds:
+        creds_text = "\n".join([f"• {k}: `{v}`" for k, v in creds.items()])
+        creds_text = f"\n\n🔑 *بيانات الدخول:*\n{creds_text}"
+
+    text = (
+        f"📋 *اشتراك #{sub_id}*\n"
+        f"👤 المستخدم: @{sub['username'] or '—'} (`{sub['user_id']}`)\n"
+        f"📦 الخدمة: {sub['service_name']}\n"
+        f"📅 الخطة: {sub['plan_name']} ({sub['duration_days']} يوم)\n"
+        f"🟢 الحالة: {status_label}\n"
+        f"📆 بدء: {started}\n"
+        f"⏳ انتهاء: {expires}"
+        f"{creds_text}"
+    )
+
+    kbd = [
+        [InlineKeyboardButton("⏳ تمديد", callback_data=f"subextend_{sub_id}"),
+         InlineKeyboardButton("❌ إلغاء", callback_data=f"subcancel_{sub_id}")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="wiz_subs")],
+    ]
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kbd), parse_mode="Markdown")
+    return SUB_DETAIL
+
+
+async def cb_sub_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer("✅ تم إلغاء الاشتراك", show_alert=True)
+    sub_id = int(q.data.replace("subcancel_", ""))
+    db.cancel_subscription(sub_id)
+    q.data = f"subdetail_{sub_id}"
+    return await cb_sub_detail(update, context)
+
+
+async def cb_sub_extend_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    sub_id = int(q.data.replace("subextend_", ""))
+    context.user_data["sub_id"] = sub_id
+    kbd = [[InlineKeyboardButton("🔙 رجوع", callback_data=f"subdetail_{sub_id}")]]
+    await q.edit_message_text(
+        f"⏳ كم يوم تريد تمديد الاشتراك #{sub_id}؟\nأرسل عدد الأيام (مثال: 7):",
+        reply_markup=InlineKeyboardMarkup(kbd)
+    )
+    return SUB_EXTEND
+
+
+async def cb_sub_extend_do(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip()
+    sub_id = context.user_data.get("sub_id")
+
+    if not text.isdigit() or int(text) <= 0:
+        await update.message.reply_text("❌ أرسل عدد أيام صحيح (مثال: 7)")
+        return SUB_EXTEND
+
+    days = int(text)
+    db.extend_subscription(sub_id, days)
+    await update.message.reply_text(f"✅ تم تمديد الاشتراك #{sub_id} بمقدار {days} يوم.")
+
+    class _FakeQuery:
+        async def answer(self): pass
+        async def edit_message_text(self, *a, **kw):
+            await update.message.reply_text(*a, **kw)
+        data = f"subdetail_{sub_id}"
+
+    update.callback_query = _FakeQuery()
+    return await cb_sub_detail(update, context)
+
 def get_wizard_handlers():
     CANCEL = [CallbackQueryHandler(wizard_cancel, pattern="^wizard_cancel$")]
 
@@ -1631,6 +1818,31 @@ def get_wizard_handlers():
                 ],
                 RCH_PRESETS: [MessageHandler(filters.TEXT & ~filters.COMMAND, rch_collect_presets)],
                 RCH_LIMITS:  [MessageHandler(filters.TEXT & ~filters.COMMAND, rch_collect_limits)],
+            }, fallbacks=CANCEL, per_message=False, allow_reentry=True),
+
+        ConversationHandler(
+            entry_points=[CallbackQueryHandler(cb_subs_main, pattern="^wiz_subs$")],
+            states={
+                SUB_MAIN: [
+                    CallbackQueryHandler(cb_subs_filter,       pattern="^subfilter_"),
+                    CallbackQueryHandler(cb_subs_page,         pattern="^subpage_"),
+                    CallbackQueryHandler(cb_sub_detail,        pattern="^subdetail_"),
+                    CallbackQueryHandler(cb_subs_search_start, pattern="^subsearch_"),
+                ],
+                SUB_SEARCH: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, cb_subs_search_handle),
+                ],
+                SUB_DETAIL: [
+                    CallbackQueryHandler(cb_subs_main,         pattern="^wiz_subs$"),
+                    CallbackQueryHandler(cb_subs_filter,       pattern="^subfilter_"),
+                    CallbackQueryHandler(cb_sub_detail,        pattern="^subdetail_"),
+                    CallbackQueryHandler(cb_sub_cancel,        pattern="^subcancel_"),
+                    CallbackQueryHandler(cb_sub_extend_ask,    pattern="^subextend_"),
+                ],
+                SUB_EXTEND: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, cb_sub_extend_do),
+                    CallbackQueryHandler(cb_sub_detail,        pattern="^subdetail_"),
+                ],
             }, fallbacks=CANCEL, per_message=False, allow_reentry=True),
     ]
 
