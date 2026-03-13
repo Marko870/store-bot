@@ -32,6 +32,7 @@ def cancel_kb():
 (ORD_MAIN, ORD_SEARCH, ORD_DETAIL, ORD_CONFIRM) = range(100, 104)
 (SUB_MAIN, SUB_SEARCH, SUB_DETAIL, SUB_EXTEND) = range(110, 114)
 (USR_MAIN, USR_SEARCH, USR_DETAIL) = range(120, 123)
+(STATS_MAIN,) = range(130, 131)
 PER_PAGE = 5
 (RCH_SVC, RCH_RATE, RCH_PRESETS, RCH_LIMITS) = range(90, 94)
 
@@ -64,7 +65,8 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("⏳ الطلبات",        callback_data="wiz_orders")],
         [InlineKeyboardButton("📋 الاشتراكات",    callback_data="wiz_subs"),
          InlineKeyboardButton("👥 المستخدمون",    callback_data="wiz_users")],
-        [InlineKeyboardButton("🎫 التذاكر",        callback_data="wiz_tickets")],
+        [InlineKeyboardButton("📊 الإحصائيات",    callback_data="wiz_stats"),
+         InlineKeyboardButton("🎫 التذاكر",        callback_data="wiz_tickets")],
         [InlineKeyboardButton("📢 إذاعة",          callback_data="wiz_broadcast")],
     ])
     if update.message:
@@ -1844,6 +1846,76 @@ async def cb_user_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q.data = f"usrdetail_{uid}"
     return await cb_user_detail(update, context)
 
+
+# ══════════════════════════════════════════════════════
+#   الإحصائيات — Admin Statistics
+# ══════════════════════════════════════════════════════
+
+async def cb_stats_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    period = context.user_data.get("stats_period", "month")
+    return await _show_stats(update, context, period)
+
+
+async def cb_stats_period(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    period = q.data.replace("statsperiod_", "")
+    context.user_data["stats_period"] = period
+    return await _show_stats(update, context, period)
+
+
+async def _show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE, period: str):
+    q = update.callback_query
+
+    period_labels = {"day": "اليوم", "week": "الأسبوع", "month": "الشهر"}
+    label = period_labels.get(period, "الشهر")
+
+    summary  = db.get_summary_stats(period)
+    by_svc   = db.get_revenue_by_service(period)
+    by_time  = db.get_revenue_by_period(period)
+
+    # --- نص الملخص ---
+    lines = [
+        f"📊 *إحصائيات {label}*",
+        f"",
+        f"💰 الإيرادات: `{summary['revenue']} USDT`",
+        f"📦 الطلبات المنجزة: `{summary['orders']}`",
+        f"👤 مستخدمون جدد: `{summary['new_users']}`",
+        f"📋 اشتراكات جديدة: `{summary['new_subs']}`",
+    ]
+
+    if by_svc:
+        lines.append("")
+        lines.append("📈 *الإيرادات حسب الخدمة:*")
+        for row in by_svc:
+            lines.append(f"• {row['service_name']}: `{round(row['revenue'],2)} USDT` ({row['orders']} طلب)")
+
+    if by_time:
+        lines.append("")
+        lines.append("🕐 *التوزيع الزمني:*")
+        for row in by_time:
+            p = row["period"]
+            if period == "day":
+                p_str = p.strftime("%H:00") if p else "—"
+            else:
+                p_str = p.strftime("%Y-%m-%d") if p else "—"
+            lines.append(f"• {p_str}: `{round(row['revenue'],2)} USDT` ({row['orders']} طلب)")
+
+    text = "\n".join(lines)
+
+    # --- الأزرار ---
+    period_row = [
+        InlineKeyboardButton("اليوم"   + (" ✓" if period == "day"   else ""), callback_data="statsperiod_day"),
+        InlineKeyboardButton("الأسبوع" + (" ✓" if period == "week"  else ""), callback_data="statsperiod_week"),
+        InlineKeyboardButton("الشهر"   + (" ✓" if period == "month" else ""), callback_data="statsperiod_month"),
+    ]
+    kbd = [period_row, [InlineKeyboardButton("🔙 رجوع", callback_data="admin_back")]]
+
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kbd), parse_mode="Markdown")
+    return STATS_MAIN
+
 def get_wizard_handlers():
     CANCEL = [CallbackQueryHandler(wizard_cancel, pattern="^wizard_cancel$")]
 
@@ -2010,6 +2082,14 @@ def get_wizard_handlers():
                     CallbackQueryHandler(cb_user_detail,  pattern="^usrdetail_"),
                     CallbackQueryHandler(cb_user_ban,     pattern="^usrban_"),
                     CallbackQueryHandler(cb_user_unban,   pattern="^usrunban_"),
+                ],
+            }, fallbacks=CANCEL, per_message=False, allow_reentry=True),
+
+        ConversationHandler(
+            entry_points=[CallbackQueryHandler(cb_stats_main, pattern="^wiz_stats$")],
+            states={
+                STATS_MAIN: [
+                    CallbackQueryHandler(cb_stats_period, pattern="^statsperiod_"),
                 ],
             }, fallbacks=CANCEL, per_message=False, allow_reentry=True),
     ]
