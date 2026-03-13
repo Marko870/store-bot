@@ -1403,7 +1403,7 @@ def register_handlers(app: Application):
     app.add_handler(CallbackQueryHandler(cb_admin_skip,     pattern="^admin_skip$"))
 
     # Callbacks لوحة الأدمن — كانت ناقصة
-    from admin_wizard import (cb_list_services, cb_admin_back, cb_orders, cb_tickets,
+    from admin_wizard import (cb_list_services, cb_admin_back, cb_orders_main, cb_tickets,
                               cb_quickdel_svc, cb_quickdel_confirm)
     app.add_handler(CallbackQueryHandler(
         lambda u, c: __import__("admin_wizard").wiz_variants_start(u, c),
