@@ -33,6 +33,7 @@ def cancel_kb():
 (SUB_MAIN, SUB_SEARCH, SUB_DETAIL, SUB_EXTEND) = range(110, 114)
 (USR_MAIN, USR_SEARCH, USR_DETAIL) = range(120, 123)
 (STATS_MAIN,) = range(130, 131)
+(TKT_MAIN, TKT_SEARCH, TKT_DETAIL, TKT_REPLY) = range(140, 144)
 PER_PAGE = 5
 (RCH_SVC, RCH_RATE, RCH_PRESETS, RCH_LIMITS) = range(90, 94)
 
@@ -1916,6 +1917,204 @@ async def _show_stats(update: Update, context: ContextTypes.DEFAULT_TYPE, period
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kbd), parse_mode="Markdown")
     return STATS_MAIN
 
+
+# ══════════════════════════════════════════════════════
+#   التذاكر — Admin Tickets Management
+# ══════════════════════════════════════════════════════
+
+async def cb_tickets_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    status = context.user_data.get("tkt_status", "open")
+    page   = context.user_data.get("tkt_page", 0)
+    search = context.user_data.get("tkt_search", "")
+
+    rows, total = db.get_tickets_admin(status=status, page=page, per_page=PER_PAGE, search=search)
+    pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
+
+    filters_row = [
+        InlineKeyboardButton("مفتوحة" + (" ✓" if status == "open"   else ""), callback_data="tktfilter_open"),
+        InlineKeyboardButton("مغلقة"  + (" ✓" if status == "closed" else ""), callback_data="tktfilter_closed"),
+        InlineKeyboardButton("الكل"   + (" ✓" if status == "all"    else ""), callback_data="tktfilter_all"),
+    ]
+
+    kbd = [filters_row]
+    for row in rows:
+        icon = "🟢" if row["status"] == "open" else "🔴"
+        name = row["username"] or row["full_name"] or str(row["user_id"])
+        preview = row["message"][:30] + ("..." if len(row["message"]) > 30 else "")
+        kbd.append([InlineKeyboardButton(f"{icon} #{row['id']} {name} — {preview}", callback_data=f"tktdetail_{row['id']}")])
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️ السابق", callback_data=f"tktpage_{page-1}"))
+    if page < pages - 1:
+        nav.append(InlineKeyboardButton("التالي ▶️", callback_data=f"tktpage_{page+1}"))
+    if nav:
+        kbd.append(nav)
+
+    kbd.append([InlineKeyboardButton("🔍 بحث", callback_data="tktsearch_start")])
+    kbd.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin_back")])
+
+    search_note = (f"\n🔍 بحث: `{search}`") if search else ""
+    text = f"🎫 *التذاكر* — {total} إجمالي{search_note}\nالصفحة {page+1}/{pages}"
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kbd), parse_mode="Markdown")
+    return TKT_MAIN
+
+
+async def cb_tickets_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    context.user_data["tkt_status"] = q.data.replace("tktfilter_", "")
+    context.user_data["tkt_page"]   = 0
+    context.user_data.pop("tkt_search", None)
+    return await cb_tickets_main(update, context)
+
+
+async def cb_tickets_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    context.user_data["tkt_page"] = int(q.data.replace("tktpage_", ""))
+    return await cb_tickets_main(update, context)
+
+
+async def cb_tickets_search_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    await q.edit_message_text("🔍 أرسل اسم المستخدم أو رقم التذكرة:")
+    return TKT_SEARCH
+
+
+async def cb_tickets_search_handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["tkt_search"] = update.message.text.strip()
+    context.user_data["tkt_page"]   = 0
+
+    class _FakeQuery:
+        async def answer(self): pass
+        async def edit_message_text(self, *a, **kw):
+            await update.message.reply_text(*a, **kw)
+        data = "wiz_tickets"
+
+    update.callback_query = _FakeQuery()
+    return await cb_tickets_main(update, context)
+
+
+async def cb_ticket_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    tkt_id = int(q.data.replace("tktdetail_", ""))
+    context.user_data["tkt_id"] = tkt_id
+
+    ticket = db.get_ticket_by_id(tkt_id)
+    if not ticket:
+        await q.edit_message_text("❌ التذكرة غير موجودة.")
+        return TKT_MAIN
+
+    messages = db.get_ticket_messages(tkt_id) or []
+    status_label = "🟢 مفتوحة" if ticket["status"] == "open" else "🔴 مغلقة"
+    created = ticket["created_at"].strftime("%Y-%m-%d %H:%M") if ticket.get("created_at") else "—"
+    name = ticket["username"] or ticket["full_name"] or str(ticket["user_id"])
+
+    lines = [
+        f"🎫 *تذكرة #{tkt_id}*",
+        f"👤 المستخدم: @{ticket['username'] or '—'} (`{ticket['user_id']}`)",
+        f"📅 تاريخ: {created}",
+        f"🟢 الحالة: {status_label}",
+        f"",
+        f"💬 *المحادثة:*",
+    ]
+
+    if messages:
+        for msg in messages:
+            sender_icon = "👤" if msg["sender"] == "user" else "🛡️"
+            time_str = msg["sent_at"].strftime("%H:%M") if msg.get("sent_at") else ""
+            lines.append(f"{sender_icon} [{time_str}] {msg['message']}")
+    else:
+        lines.append(f"👤 {ticket['message']}")
+
+    text = "\n".join(lines)
+
+    kbd = []
+    if ticket["status"] == "open":
+        kbd.append([
+            InlineKeyboardButton("✏️ رد", callback_data=f"tktreply_{tkt_id}"),
+            InlineKeyboardButton("🔒 إغلاق", callback_data=f"tktclose_{tkt_id}"),
+        ])
+    else:
+        kbd.append([
+            InlineKeyboardButton("✏️ رد", callback_data=f"tktreply_{tkt_id}"),
+            InlineKeyboardButton("🔓 إعادة فتح", callback_data=f"tktreopen_{tkt_id}"),
+        ])
+    kbd.append([InlineKeyboardButton("🔙 رجوع", callback_data="wiz_tickets")])
+
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kbd), parse_mode="Markdown")
+    return TKT_DETAIL
+
+
+async def cb_ticket_reply_ask(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    tkt_id = int(q.data.replace("tktreply_", ""))
+    context.user_data["tkt_id"] = tkt_id
+    kbd = [[InlineKeyboardButton("🔙 رجوع", callback_data=f"tktdetail_{tkt_id}")]]
+    await q.edit_message_text(
+        f"✏️ أرسل ردك على التذكرة #{tkt_id}:",
+        reply_markup=InlineKeyboardMarkup(kbd)
+    )
+    return TKT_REPLY
+
+
+async def cb_ticket_reply_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    reply_text = update.message.text.strip()
+    tkt_id = context.user_data.get("tkt_id")
+
+    ticket = db.get_ticket_by_id(tkt_id)
+    if not ticket:
+        await update.message.reply_text("❌ التذكرة غير موجودة.")
+        return TKT_MAIN
+
+    # حفظ الرد في قاعدة البيانات
+    db.add_ticket_message(tkt_id, "admin", reply_text)
+
+    # إرسال الرد للمستخدم
+    try:
+        await update.get_bot().send_message(
+            chat_id=ticket["user_id"],
+            text=f"📩 *رد من الدعم على تذكرتك #{tkt_id}:*\n\n{reply_text}",
+            parse_mode="Markdown"
+        )
+        await update.message.reply_text(f"✅ تم إرسال الرد للمستخدم.")
+    except Exception:
+        await update.message.reply_text("⚠️ تم حفظ الرد لكن لم يتمكن البوت من إرساله للمستخدم.")
+
+    # العودة لتفاصيل التذكرة
+    class _FakeQuery:
+        async def answer(self): pass
+        async def edit_message_text(self, *a, **kw):
+            await update.message.reply_text(*a, **kw)
+        data = f"tktdetail_{tkt_id}"
+
+    update.callback_query = _FakeQuery()
+    return await cb_ticket_detail(update, context)
+
+
+async def cb_ticket_close(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    tkt_id = int(q.data.replace("tktclose_", ""))
+    db.close_ticket(tkt_id)
+    await q.answer("🔒 تم إغلاق التذكرة", show_alert=True)
+    q.data = f"tktdetail_{tkt_id}"
+    return await cb_ticket_detail(update, context)
+
+
+async def cb_ticket_reopen(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    tkt_id = int(q.data.replace("tktreopen_", ""))
+    db.reopen_ticket(tkt_id)
+    await q.answer("🔓 تم إعادة فتح التذكرة", show_alert=True)
+    q.data = f"tktdetail_{tkt_id}"
+    return await cb_ticket_detail(update, context)
+
 def get_wizard_handlers():
     CANCEL = [CallbackQueryHandler(wizard_cancel, pattern="^wizard_cancel$")]
 
@@ -2090,6 +2289,31 @@ def get_wizard_handlers():
             states={
                 STATS_MAIN: [
                     CallbackQueryHandler(cb_stats_period, pattern="^statsperiod_"),
+                ],
+            }, fallbacks=CANCEL, per_message=False, allow_reentry=True),
+
+        ConversationHandler(
+            entry_points=[CallbackQueryHandler(cb_tickets_main, pattern="^wiz_tickets$")],
+            states={
+                TKT_MAIN: [
+                    CallbackQueryHandler(cb_tickets_filter,       pattern="^tktfilter_"),
+                    CallbackQueryHandler(cb_tickets_page,         pattern="^tktpage_"),
+                    CallbackQueryHandler(cb_ticket_detail,        pattern="^tktdetail_"),
+                    CallbackQueryHandler(cb_tickets_search_start, pattern="^tktsearch_start$"),
+                ],
+                TKT_SEARCH: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, cb_tickets_search_handle),
+                ],
+                TKT_DETAIL: [
+                    CallbackQueryHandler(cb_tickets_main,      pattern="^wiz_tickets$"),
+                    CallbackQueryHandler(cb_ticket_detail,     pattern="^tktdetail_"),
+                    CallbackQueryHandler(cb_ticket_reply_ask,  pattern="^tktreply_"),
+                    CallbackQueryHandler(cb_ticket_close,      pattern="^tktclose_"),
+                    CallbackQueryHandler(cb_ticket_reopen,     pattern="^tktreopen_"),
+                ],
+                TKT_REPLY: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, cb_ticket_reply_send),
+                    CallbackQueryHandler(cb_ticket_detail,     pattern="^tktdetail_"),
                 ],
             }, fallbacks=CANCEL, per_message=False, allow_reentry=True),
     ]
