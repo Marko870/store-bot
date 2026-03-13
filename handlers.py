@@ -991,15 +991,20 @@ async def handle_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ٣. نصوص التعبئة
     if await handle_recharge_text(update, context):
+        logger.info(f"[DEBUG] uid={uid} handled by handle_recharge_text")
         return
 
     # ٤. رسالة دعم — قبل handle_input_response لأن state DB قد يتعارض
     if await handle_support_message(update, context):
+        logger.info(f"[DEBUG] uid={uid} handled by handle_support_message")
         return
 
     # ٥. إدخال ديناميكي (رقم هاتف، كمية، إلخ)
     if await handle_input_response(update, context):
+        logger.info(f"[DEBUG] uid={uid} handled by handle_input_response")
         return
+
+    logger.info(f"[DEBUG] uid={uid} state={db.get_user_state(uid)} — no handler matched")
 
 
 # ══════════════════════════════════════════
