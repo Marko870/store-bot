@@ -831,17 +831,18 @@ class Database:
     # ══════════════════════════════
 
     def _ensure_ticket_messages_table(self):
-        with self._conn.cursor() as cur:
+        with self.conn() as c:
+            cur = c.cursor()
             cur.execute("""
                 CREATE TABLE IF NOT EXISTS ticket_messages (
                     id         SERIAL PRIMARY KEY,
                     ticket_id  INTEGER REFERENCES tickets(id) ON DELETE CASCADE,
-                    sender     TEXT NOT NULL,  -- 'user' or 'admin'
+                    sender     TEXT NOT NULL,
                     message    TEXT NOT NULL,
                     sent_at    TIMESTAMP DEFAULT NOW()
                 );
             """)
-            self._conn.commit()
+            c.commit()
 
     def create_ticket(self, uid, message):
         self._ensure_ticket_messages_table()
