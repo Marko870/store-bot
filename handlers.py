@@ -1410,7 +1410,7 @@ def register_handlers(app: Application):
         pattern="^wiz_variants$"))
     app.add_handler(CallbackQueryHandler(cb_list_services,    pattern="^wiz_list$"))
     app.add_handler(CallbackQueryHandler(cb_admin_back,       pattern="^admin_back$"))
-    app.add_handler(CallbackQueryHandler(cb_orders,           pattern="^wiz_orders$"))
+    app.add_handler(CallbackQueryHandler(cb_orders_main,      pattern="^wiz_orders$"))
     app.add_handler(CallbackQueryHandler(cb_tickets,          pattern="^wiz_tickets$"))
     app.add_handler(CallbackQueryHandler(cb_quickdel_svc,     pattern=r"^quickdel_svc_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_quickdel_confirm, pattern=r"^quickdel_confirm_\d+$"))
