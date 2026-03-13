@@ -561,6 +561,88 @@ class Database:
             ORDER BY o.created_at DESC
         """)
 
+
+    def get_subscription_orders(self, status=None, page=0, per_page=5, search=None):
+        """طلبات الاشتراكات مع pagination وبحث"""
+        offset = page * per_page
+        conditions = ["o.order_type != 'recharge'"]
+        params = []
+        if status:
+            conditions.append("o.status = %s")
+            params.append(status)
+        if search:
+            conditions.append("(u.full_name ILIKE %s OR u.username ILIKE %s OR CAST(o.id AS TEXT) = %s)")
+            params += [f"%{search}%", f"%{search}%", search]
+        where = " AND ".join(conditions)
+        rows = self.fetch(f"""
+            SELECT o.*, u.full_name, u.username,
+                   p.name_ar as plan_name_ar,
+                   s.name_ar as svc_ar
+            FROM orders o
+            JOIN users u ON o.user_id = u.id
+            LEFT JOIN plans p ON o.plan_id = p.id
+            JOIN services s ON o.service_id = s.id
+            WHERE {where}
+            ORDER BY o.created_at DESC
+            LIMIT %s OFFSET %s
+        """, params + [per_page, offset])
+        total = self.fetchone(f"""
+            SELECT COUNT(*) as c FROM orders o
+            JOIN users u ON o.user_id = u.id
+            LEFT JOIN plans p ON o.plan_id = p.id
+            JOIN services s ON o.service_id = s.id
+            WHERE {where}
+        """, params)["c"]
+        return rows, total
+
+    def get_recharge_orders(self, status=None, page=0, per_page=5, search=None):
+        """طلبات التعبئة مع pagination وبحث"""
+        offset = page * per_page
+        conditions = ["o.order_type = 'recharge'"]
+        params = []
+        if status:
+            conditions.append("o.status = %s")
+            params.append(status)
+        if search:
+            conditions.append("(u.full_name ILIKE %s OR u.username ILIKE %s OR CAST(o.id AS TEXT) = %s OR o.phone_number ILIKE %s)")
+            params += [f"%{search}%", f"%{search}%", search, f"%{search}%"]
+        where = " AND ".join(conditions)
+        rows = self.fetch(f"""
+            SELECT o.*, u.full_name, u.username,
+                   s.name_ar as svc_ar
+            FROM orders o
+            JOIN users u ON o.user_id = u.id
+            JOIN services s ON o.service_id = s.id
+            WHERE {where}
+            ORDER BY o.created_at DESC
+            LIMIT %s OFFSET %s
+        """, params + [per_page, offset])
+        total = self.fetchone(f"""
+            SELECT COUNT(*) as c FROM orders o
+            JOIN users u ON o.user_id = u.id
+            JOIN services s ON o.service_id = s.id
+            WHERE {where}
+        """, params)["c"]
+        return rows, total
+
+    def get_order_by_id(self, order_id):
+        return self.fetchone("""
+            SELECT o.*, u.full_name, u.username,
+                   p.name_ar as plan_name_ar,
+                   s.name_ar as svc_ar
+            FROM orders o
+            JOIN users u ON o.user_id = u.id
+            LEFT JOIN plans p ON o.plan_id = p.id
+            JOIN services s ON o.service_id = s.id
+            WHERE o.id = %s
+        """, (order_id,))
+
+    def approve_subscription_order(self, order_id):
+        self.execute("UPDATE orders SET status='paid', paid_at=NOW() WHERE id=%s", (order_id,))
+
+    def reject_order(self, order_id):
+        self.execute("UPDATE orders SET status='rejected' WHERE id=%s", (order_id,))
+
     # ══════════════════════════════
     #   Subscriptions
     # ══════════════════════════════
