@@ -29,6 +29,8 @@ def cancel_kb():
 (RATE_SVC, RATE_VALUE) = range(60, 62)
 (BROADCAST_MSG,) = range(70, 71)
 (VAR_SVC, VAR_NAME_AR, VAR_NAME_EN, VAR_OPTS) = range(80, 84)
+(ORD_MAIN, ORD_SEARCH, ORD_DETAIL, ORD_CONFIRM) = range(100, 104)
+PER_PAGE = 5
 (RCH_SVC, RCH_RATE, RCH_PRESETS, RCH_LIMITS) = range(90, 94)
 
 
@@ -837,33 +839,278 @@ async def mansub_creds(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #   ⑦ الطلبات والتذاكر
 # ══════════════════════════════════════════
 
-async def cb_orders(update: Update, context: ContextTypes.DEFAULT_TYPE):
+# ══════════════════════════════════════════
+#   إدارة الطلبات
+# ══════════════════════════════════════════
+(ORD_MAIN, ORD_SEARCH, ORD_DETAIL, ORD_CONFIRM) = range(100, 104)
+
+PER_PAGE = 5
+
+def _order_status_label(status):
+    return {
+        "awaiting_approval": "⏳ معلق",
+        "paid":              "✅ منجز",
+        "completed":         "✅ منجز",
+        "rejected":          "❌ مرفوض",
+        "pending":           "⏳ معلق",
+    }.get(status, status)
+
+
+def _build_orders_kb(orders, total, page, order_type, status_filter, search=None):
+    btns = []
+    for o in orders:
+        label = (
+            "#" + str(o["id"]) + " | " +
+            (o.get("full_name") or "—") + " | " +
+            f"{o.get('amount_local') or o.get('amount', 0):,.0f}" +
+            (" ل.س" if o.get("order_type") == "recharge" else " USDT") +
+            " | " + _order_status_label(o["status"])
+        )
+        btns.append([InlineKeyboardButton(label, callback_data="orddetail_" + str(o["id"]))])
+
+    # pagination
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️ السابق", callback_data=f"ordpage_{order_type}_{status_filter}_{page-1}"))
+    total_pages = (total + PER_PAGE - 1) // PER_PAGE
+    nav.append(InlineKeyboardButton(f"{page+1}/{total_pages}", callback_data="noop"))
+    if (page + 1) * PER_PAGE < total:
+        nav.append(InlineKeyboardButton("التالي ▶️", callback_data=f"ordpage_{order_type}_{status_filter}_{page+1}"))
+    if nav:
+        btns.append(nav)
+
+    # فلاتر
+    filters_row = []
+    for s, label in [("all", "الكل"), ("awaiting_approval", "⏳ معلقة"), ("paid", "✅ منجزة"), ("rejected", "❌ مرفوضة")]:
+        mark = "•" if s == status_filter else ""
+        filters_row.append(InlineKeyboardButton(mark + label, callback_data=f"ordfilter_{order_type}_{s}"))
+    btns.append(filters_row[:2])
+    btns.append(filters_row[2:])
+
+    btns.append([InlineKeyboardButton("🔍 بحث", callback_data=f"ordsearch_{order_type}")])
+    btns.append([InlineKeyboardButton("◀️ رجوع", callback_data="wiz_orders")])
+    return InlineKeyboardMarkup(btns)
+
+
+async def cb_orders_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    orders = db.get_pending_orders()
+    if not is_admin(q.from_user.id): return
+    pending_sub = db.get_subscription_orders(status="awaiting_approval")[1]
+    pending_rch = db.get_recharge_orders(status="pending")[1]
+    kb = InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            "📦 طلبات الاشتراكات" + (f" ({pending_sub} معلق)" if pending_sub else ""),
+            callback_data="ordtype_subscription_awaiting_approval_0")],
+        [InlineKeyboardButton(
+            "📱 طلبات التعبئة" + (f" ({pending_rch} معلق)" if pending_rch else ""),
+            callback_data="ordtype_recharge_pending_0")],
+        [InlineKeyboardButton("◀️ رجوع", callback_data="admin_back")],
+    ])
+    await q.edit_message_text("⏳ *إدارة الطلبات*\n\nاختر نوع الطلب:", parse_mode="Markdown", reply_markup=kb)
+
+
+async def cb_orders_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    parts       = q.data.split("_")
+    order_type  = parts[1]
+    status      = parts[2]
+    page        = int(parts[3])
+    context.user_data["ord"] = {"type": order_type, "status": status, "page": page, "search": None}
+    await _show_orders(q, context, order_type, status, page)
+
+
+async def cb_orders_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    parts      = q.data.split("_")
+    order_type = parts[1]
+    status     = parts[2]
+    page       = int(parts[3])
+    search     = (context.user_data.get("ord") or {}).get("search")
+    context.user_data["ord"] = {"type": order_type, "status": status, "page": page, "search": search}
+    await _show_orders(q, context, order_type, status, page, search)
+
+
+async def cb_orders_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    parts      = q.data.split("_")
+    order_type = parts[1]
+    status     = parts[2]
+    search     = (context.user_data.get("ord") or {}).get("search")
+    context.user_data["ord"] = {"type": order_type, "status": status, "page": 0, "search": search}
+    await _show_orders(q, context, order_type, status, 0, search)
+
+
+async def _show_orders(q, context, order_type, status, page, search=None):
+    status_param = None if status == "all" else status
+    if order_type == "recharge":
+        orders, total = db.get_recharge_orders(status=status_param, page=page, per_page=PER_PAGE, search=search)
+    else:
+        orders, total = db.get_subscription_orders(status=status_param, page=page, per_page=PER_PAGE, search=search)
+
+    type_label = "التعبئة" if order_type == "recharge" else "الاشتراكات"
     if not orders:
         await q.edit_message_text(
-            "✅ لا توجد طلبات معلقة",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ رجوع", callback_data="admin_back")]]))
+            "لا توجد طلبات.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ رجوع", callback_data="wiz_orders")]]))
         return
-    for o in orders[:5]:
-        user_opts = json.loads(o.get("user_options") or "{}")
-        user_inps = json.loads(o.get("user_inputs") or "{}")
-        opts_text = ""
-        for k, v in {**user_opts, **user_inps}.items():
-            opts_text += f"\n  • {k}: {v}"
-        text = (
-            f"🔖 *طلب #{o['id']}*\n"
-            f"👤 {o['full_name']} (@{o.get('username', '—')})\n"
-            f"🛍️ {o['svc_ar']} — {o['plan_name_ar']}\n"
-            f"💰 {o['amount']} USDT"
-            + (f"\n📋 خيارات:{opts_text}" if opts_text else "")
-        )
-        await context.bot.send_message(
-            chat_id=q.from_user.id, text=text, parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton("✅ قبول", callback_data=f"approve_{o['id']}_{o['user_id']}_{o['plan_id']}"),
-                InlineKeyboardButton("❌ رفض",  callback_data=f"reject_{o['id']}_{o['user_id']}")
-            ]]))
+
+    header = f"📋 طلبات {type_label} | {total} طلب"
+    if search:
+        header += f" | بحث: {search}"
+    await q.edit_message_text(
+        header,
+        parse_mode="Markdown",
+        reply_markup=_build_orders_kb(orders, total, page, order_type, status, search))
+
+
+async def cb_orders_search_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    order_type = q.data.split("_")[1]
+    context.user_data["ord_search_type"] = order_type
+    db.set_user_state(q.from_user.id, "ADMIN_ORD_SEARCH")
+    await q.edit_message_text(
+        "🔍 ابحث باسم المستخدم، @username، رقم الطلب، أو رقم الهاتف:",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="wiz_orders")]]))
+
+
+async def cb_order_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    order_id = int(q.data.split("_")[1])
+    order    = db.get_order_by_id(order_id)
+    if not order:
+        await q.answer("الطلب غير موجود", show_alert=True); return
+
+    is_rch = order.get("order_type") == "recharge"
+    lines  = [
+        f"🔖 *طلب #{order['id']}*",
+        f"👤 {order['full_name']} (@{order.get('username') or '—'})",
+        f"🛍️ {order['svc_ar']}",
+    ]
+    if is_rch:
+        lines += [
+            f"💵 {order.get('amount_local', 0):,.0f} ل.س",
+            f"💳 {order['amount']} USDT",
+            f"📞 `{order.get('phone_number') or '—'}`",
+        ]
+    else:
+        lines += [
+            f"📦 {order.get('plan_name_ar') or '—'}",
+            f"💳 {order['amount']} USDT",
+        ]
+    lines.append(f"📊 {_order_status_label(order['status'])}")
+    lines.append(f"🕐 {order['created_at'].strftime('%Y-%m-%d %H:%M') if order.get('created_at') else '—'}")
+
+    # خيارات المستخدم
+    try:
+        opts = {**(json.loads(order.get("user_options") or "{}")), **(json.loads(order.get("user_inputs") or "{}"))}
+        if opts:
+            lines.append("\n📋 خيارات:")
+            for k, v in opts.items():
+                lines.append(f"  • {k}: {v}")
+    except Exception:
+        pass
+
+    btns = []
+    status = order["status"]
+    pending = status in ("awaiting_approval", "pending")
+    if pending:
+        btns.append([
+            InlineKeyboardButton("✅ قبول",  callback_data=f"ordconfirm_approve_{order_id}"),
+            InlineKeyboardButton("❌ رفض",   callback_data=f"ordconfirm_reject_{order_id}"),
+        ])
+
+    # صورة الإشعار إن وجدت
+    try:
+        proof = json.loads(order.get("user_inputs") or "{}").get("proof_file_id")
+        if proof:
+            btns.append([InlineKeyboardButton("🖼️ عرض الإشعار", callback_data=f"ordproof_{order_id}")])
+    except Exception:
+        pass
+
+    ord_ctx = context.user_data.get("ord", {})
+    back_data = f"ordtype_{ord_ctx.get('type','subscription')}_{ord_ctx.get('status','all')}_{ord_ctx.get('page',0)}"
+    btns.append([InlineKeyboardButton("◀️ رجوع", callback_data=back_data)])
+
+    await q.edit_message_text("\n".join(lines), parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
+
+
+async def cb_order_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    parts    = q.data.split("_")
+    action   = parts[1]
+    order_id = int(parts[2])
+    order    = db.get_order_by_id(order_id)
+    if not order:
+        await q.answer("الطلب غير موجود", show_alert=True); return
+
+    action_label = "قبول" if action == "approve" else "رفض"
+    await q.edit_message_text(
+        f"⚠️ هل أنت متأكد من *{action_label}* طلب #{order_id}؟\n\n"
+        f"👤 {order['full_name']}\n"
+        f"💳 {order['amount']} USDT",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton(f"✅ نعم، {action_label}", callback_data=f"ordexec_{action}_{order_id}"),
+             InlineKeyboardButton("◀️ لا، رجوع",             callback_data=f"orddetail_{order_id}")]
+        ]))
+
+
+async def cb_order_execute(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    parts    = q.data.split("_")
+    action   = parts[1]
+    order_id = int(parts[2])
+    order    = db.get_order_by_id(order_id)
+    if not order:
+        await q.answer("الطلب غير موجود", show_alert=True); return
+
+    is_rch = order.get("order_type") == "recharge"
+
+    if action == "approve":
+        if is_rch:
+            db.complete_recharge_order(order_id)
+            msg = f"✅ تمت التعبئة\nالمبلغ: {order.get('amount_local', 0):,.0f} ل.س\nالرقم: {order.get('phone_number') or '—'}"
+        else:
+            db.approve_subscription_order(order_id)
+            # إنشاء الاشتراك
+            plan = db.get_plan(order["plan_id"]) if order.get("plan_id") else None
+            if plan:
+                db.create_subscription(
+                    order["user_id"], order["plan_id"], order_id,
+                    order["service_id"], plan["duration_days"])
+            msg = f"✅ تم تفعيل اشتراكك!\n📦 {order.get('plan_name_ar') or '—'}"
+        # إشعار المستخدم
+        try:
+            await context.bot.send_message(chat_id=order["user_id"], text=msg)
+        except Exception:
+            pass
+        await q.edit_message_text(f"✅ تم قبول الطلب #{order_id}")
+    else:
+        db.reject_order(order_id)
+        try:
+            await context.bot.send_message(
+                chat_id=order["user_id"],
+                text=f"❌ تم رفض طلبك #{order_id}\nللاستفسار تواصل مع الدعم.")
+        except Exception:
+            pass
+        await q.edit_message_text(f"❌ تم رفض الطلب #{order_id}")
+
+
+async def cb_order_proof(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query; await q.answer()
+    order_id = int(q.data.split("_")[1])
+    order    = db.get_order_by_id(order_id)
+    try:
+        file_id = json.loads(order.get("user_inputs") or "{}").get("proof_file_id")
+        if file_id:
+            await context.bot.send_photo(
+                chat_id=q.from_user.id, photo=file_id,
+                caption=f"إشعار دفع طلب #{order_id}")
+        else:
+            await q.answer("لا توجد صورة إشعار", show_alert=True)
+    except Exception:
+        await q.answer("تعذر عرض الصورة", show_alert=True)
+
 
 
 async def cb_tickets(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1265,7 +1512,20 @@ async def rch_collect_limits(update: Update, context: ContextTypes.DEFAULT_TYPE)
 def get_wizard_handlers():
     CANCEL = [CallbackQueryHandler(wizard_cancel, pattern="^wizard_cancel$")]
 
-    return [
+    ORDER_HANDLERS = [
+        CallbackQueryHandler(cb_orders_main,        pattern="^wiz_orders$"),
+        CallbackQueryHandler(cb_orders_type,        pattern="^ordtype_"),
+        CallbackQueryHandler(cb_orders_page,        pattern="^ordpage_"),
+        CallbackQueryHandler(cb_orders_filter,      pattern="^ordfilter_"),
+        CallbackQueryHandler(cb_orders_search_start,pattern="^ordsearch_"),
+        CallbackQueryHandler(cb_order_detail,       pattern="^orddetail_"),
+        CallbackQueryHandler(cb_order_confirm,      pattern="^ordconfirm_"),
+        CallbackQueryHandler(cb_order_execute,      pattern="^ordexec_"),
+        CallbackQueryHandler(cb_order_proof,        pattern="^ordproof_"),
+        CallbackQueryHandler(lambda u,c: u.callback_query.answer(), pattern="^noop$"),
+    ]
+
+    return ORDER_HANDLERS + [
         ConversationHandler(
             entry_points=[CallbackQueryHandler(wiz_variants_start, pattern="^wiz_variants$")],
             states={
