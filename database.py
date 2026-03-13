@@ -678,6 +678,78 @@ class Database:
             WHERE sub.user_id=%s ORDER BY sub.started_at DESC
         """, (uid,))
 
+    def get_subscriptions_admin(self, status="all", page=0, per_page=5, search=""):
+        """Get all subscriptions for admin panel with pagination and search."""
+        offset = page * per_page
+        conditions = []
+        params = []
+
+        if status == "active":
+            conditions.append("sub.status='active' AND sub.expires_at > NOW()")
+        elif status == "expired":
+            conditions.append("(sub.status='cancelled' OR sub.expires_at <= NOW())")
+
+        if search:
+            conditions.append(
+                "(u.username ILIKE %s OR CAST(u.id AS TEXT) LIKE %s OR CAST(sub.id AS TEXT) LIKE %s)"
+            )
+            s = f"%{search}%"
+            params += [s, s, s]
+
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+        rows = self.fetch(f"""
+            SELECT sub.id, sub.status, sub.started_at, sub.expires_at,
+                   sub.credentials,
+                   u.id as user_id, u.username, u.full_name,
+                   p.name_ar as plan_name, p.duration_days,
+                   s.name_ar as service_name
+            FROM subscriptions sub
+            JOIN users u ON sub.user_id = u.id
+            JOIN plans p ON sub.plan_id = p.id
+            JOIN services s ON sub.service_id = s.id
+            {where}
+            ORDER BY sub.started_at DESC
+            LIMIT %s OFFSET %s
+        """, params + [per_page, offset])
+
+        total_row = self.fetchone(f"""
+            SELECT COUNT(*) as c
+            FROM subscriptions sub
+            JOIN users u ON sub.user_id = u.id
+            JOIN plans p ON sub.plan_id = p.id
+            JOIN services s ON sub.service_id = s.id
+            {where}
+        """, params)
+        total = total_row["c"] if total_row else 0
+        return rows or [], total
+
+    def get_subscription_by_id(self, sub_id):
+        return self.fetchone("""
+            SELECT sub.*, u.username, u.full_name, u.id as user_id,
+                   p.name_ar as plan_name, p.duration_days,
+                   s.name_ar as service_name
+            FROM subscriptions sub
+            JOIN users u ON sub.user_id = u.id
+            JOIN plans p ON sub.plan_id = p.id
+            JOIN services s ON sub.service_id = s.id
+            WHERE sub.id = %s
+        """, (sub_id,))
+
+    def cancel_subscription(self, sub_id):
+        self.execute(
+            "UPDATE subscriptions SET status='cancelled' WHERE id=%s",
+            (sub_id,)
+        )
+
+    def extend_subscription(self, sub_id, days):
+        self.execute("""
+            UPDATE subscriptions
+            SET expires_at = GREATEST(expires_at, NOW()) + INTERVAL '%s days',
+                status = 'active'
+            WHERE id = %s
+        """, (days, sub_id))
+
     def get_expiring_soon(self, days=3):
         threshold = datetime.now() + timedelta(days=days)
         return self.fetch("""
