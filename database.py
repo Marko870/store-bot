@@ -272,6 +272,62 @@ class Database:
     def ban_user(self, uid):
         self.execute("UPDATE users SET is_banned=1 WHERE id=%s", (uid,))
 
+    def unban_user(self, uid):
+        self.execute("UPDATE users SET is_banned=0 WHERE id=%s", (uid,))
+
+    def get_users_admin(self, status="all", page=0, per_page=5, search=""):
+        offset = page * per_page
+        conditions = []
+        params = []
+
+        if status == "active":
+            conditions.append("is_banned=0")
+        elif status == "banned":
+            conditions.append("is_banned=1")
+
+        if search:
+            conditions.append(
+                "(username ILIKE %s OR full_name ILIKE %s OR CAST(id AS TEXT) LIKE %s)"
+            )
+            s = f"%{search}%"
+            params += [s, s, s]
+
+        where = ("WHERE " + " AND ".join(conditions)) if conditions else ""
+
+        rows = self.fetch(f"""
+            SELECT id, username, full_name, country, lang, is_banned, joined_at
+            FROM users
+            {where}
+            ORDER BY joined_at DESC
+            LIMIT %s OFFSET %s
+        """, params + [per_page, offset])
+
+        total_row = self.fetchone(f"SELECT COUNT(*) as c FROM users {where}", params)
+        total = total_row["c"] if total_row else 0
+        return rows or [], total
+
+    def get_user_stats(self, uid):
+        """Returns subscription count and order count for a user."""
+        subs = self.fetchone(
+            "SELECT COUNT(*) as c FROM subscriptions WHERE user_id=%s", (uid,)
+        )
+        orders = self.fetchone(
+            "SELECT COUNT(*) as c FROM orders WHERE user_id=%s", (uid,)
+        )
+        active_sub = self.fetchone("""
+            SELECT sub.id, p.name_ar as plan_name, s.name_ar as service_name, sub.expires_at
+            FROM subscriptions sub
+            JOIN plans p ON sub.plan_id = p.id
+            JOIN services s ON sub.service_id = s.id
+            WHERE sub.user_id=%s AND sub.status='active' AND sub.expires_at > NOW()
+            ORDER BY sub.expires_at DESC LIMIT 1
+        """, (uid,))
+        return {
+            "total_subs": subs["c"] if subs else 0,
+            "total_orders": orders["c"] if orders else 0,
+            "active_sub": active_sub,
+        }
+
     # ══════════════════════════════
     #   Service Types
     # ══════════════════════════════
