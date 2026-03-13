@@ -895,6 +895,31 @@ async def handle_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ٠. رد على سؤال الدولة (مستخدم جديد أو تعديل)
     uid = update.effective_user.id
+    # بحث الأدمن في الطلبات
+    if db.get_user_state(uid) == "ADMIN_ORD_SEARCH" and is_admin(uid) and update.message.text:
+        from admin_wizard import (
+            cb_orders_type, _show_orders
+        )
+        search     = update.message.text.strip()
+        order_type = context.user_data.pop("ord_search_type", "subscription")
+        db.clear_user_state(uid)
+        context.user_data["ord"] = {"type": order_type, "status": "all", "page": 0, "search": search}
+        # نبني fake callback query بديل
+        orders, total = (
+            db.get_recharge_orders(page=0, per_page=5, search=search)
+            if order_type == "recharge"
+            else db.get_subscription_orders(page=0, per_page=5, search=search)
+        )
+        from admin_wizard import _build_orders_kb, _order_status_label
+        type_label = "التعبئة" if order_type == "recharge" else "الاشتراكات"
+        if not orders:
+            await update.message.reply_text("لا توجد نتائج للبحث: " + search)
+        else:
+            await update.message.reply_text(
+                f"نتائج البحث في {type_label}: {total} طلب",
+                reply_markup=_build_orders_kb(orders, total, 0, order_type, "all", search))
+        return
+
     if db.get_user_state(uid) == AWAITING_COUNTRY and update.message.text:
         country = update.message.text.strip()
         db.set_user_country(uid, country)
