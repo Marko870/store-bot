@@ -31,6 +31,7 @@ def cancel_kb():
 (VAR_SVC, VAR_NAME_AR, VAR_NAME_EN, VAR_OPTS) = range(80, 84)
 (ORD_MAIN, ORD_SEARCH, ORD_DETAIL, ORD_CONFIRM) = range(100, 104)
 (SUB_MAIN, SUB_SEARCH, SUB_DETAIL, SUB_EXTEND) = range(110, 114)
+(USR_MAIN, USR_SEARCH, USR_DETAIL) = range(120, 123)
 PER_PAGE = 5
 (RCH_SVC, RCH_RATE, RCH_PRESETS, RCH_LIMITS) = range(90, 94)
 
@@ -62,7 +63,8 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("🎁 اشتراك يدوي",   callback_data="wiz_mansub"),
          InlineKeyboardButton("⏳ الطلبات",        callback_data="wiz_orders")],
         [InlineKeyboardButton("📋 الاشتراكات",    callback_data="wiz_subs"),
-         InlineKeyboardButton("🎫 التذاكر",        callback_data="wiz_tickets")],
+         InlineKeyboardButton("👥 المستخدمون",    callback_data="wiz_users")],
+        [InlineKeyboardButton("🎫 التذاكر",        callback_data="wiz_tickets")],
         [InlineKeyboardButton("📢 إذاعة",          callback_data="wiz_broadcast")],
     ])
     if update.message:
@@ -1696,6 +1698,152 @@ async def cb_sub_extend_do(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update.callback_query = _FakeQuery()
     return await cb_sub_detail(update, context)
 
+
+# ══════════════════════════════════════════════════════
+#   إدارة المستخدمين — Admin Users Management
+# ══════════════════════════════════════════════════════
+
+async def cb_users_main(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    status = context.user_data.get("usr_status", "all")
+    page   = context.user_data.get("usr_page", 0)
+    search = context.user_data.get("usr_search", "")
+
+    rows, total = db.get_users_admin(status=status, page=page, per_page=PER_PAGE, search=search)
+    pages = max(1, (total + PER_PAGE - 1) // PER_PAGE)
+
+    filters_row = [
+        InlineKeyboardButton("الكل"   + (" ✓" if status == "all"    else ""), callback_data="usrfilter_all"),
+        InlineKeyboardButton("نشطون"  + (" ✓" if status == "active" else ""), callback_data="usrfilter_active"),
+        InlineKeyboardButton("محظور"  + (" ✓" if status == "banned" else ""), callback_data="usrfilter_banned"),
+    ]
+
+    kbd = [filters_row]
+    for row in rows:
+        icon = "🚫" if row["is_banned"] else "👤"
+        name = row["username"] or row["full_name"] or str(row["id"])
+        kbd.append([InlineKeyboardButton(f"{icon} {name}", callback_data=f"usrdetail_{row['id']}")])
+
+    nav = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️ السابق", callback_data=f"usrpage_{page-1}"))
+    if page < pages - 1:
+        nav.append(InlineKeyboardButton("التالي ▶️", callback_data=f"usrpage_{page+1}"))
+    if nav:
+        kbd.append(nav)
+
+    kbd.append([InlineKeyboardButton("🔍 بحث", callback_data="usrsearch_start")])
+    kbd.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin_back")])
+
+    search_note = (f"\n🔍 بحث: `{search}`") if search else ""
+    text = f"👥 *المستخدمون* — {total} إجمالي{search_note}\nالصفحة {page+1}/{pages}"
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kbd), parse_mode="Markdown")
+    return USR_MAIN
+
+
+async def cb_users_filter(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    context.user_data["usr_status"] = q.data.replace("usrfilter_", "")
+    context.user_data["usr_page"]   = 0
+    context.user_data.pop("usr_search", None)
+    return await cb_users_main(update, context)
+
+
+async def cb_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    context.user_data["usr_page"] = int(q.data.replace("usrpage_", ""))
+    return await cb_users_main(update, context)
+
+
+async def cb_users_search_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    await q.edit_message_text("🔍 أرسل اسم المستخدم أو ID:")
+    return USR_SEARCH
+
+
+async def cb_users_search_handle(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    context.user_data["usr_search"] = update.message.text.strip()
+    context.user_data["usr_page"]   = 0
+
+    class _FakeQuery:
+        async def answer(self): pass
+        async def edit_message_text(self, *a, **kw):
+            await update.message.reply_text(*a, **kw)
+        data = "wiz_users"
+
+    update.callback_query = _FakeQuery()
+    return await cb_users_main(update, context)
+
+
+async def cb_user_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    uid = int(q.data.replace("usrdetail_", ""))
+    context.user_data["usr_uid"] = uid
+
+    user = db.get_user(uid)
+    if not user:
+        await q.edit_message_text("❌ المستخدم غير موجود.")
+        return USR_MAIN
+
+    stats = db.get_user_stats(uid)
+    active_sub = stats["active_sub"]
+
+    joined = user["joined_at"].strftime("%Y-%m-%d") if user.get("joined_at") else "—"
+    ban_icon = "🚫 محظور" if user["is_banned"] else "✅ نشط"
+
+    sub_line = "لا يوجد"
+    if active_sub:
+        exp = active_sub["expires_at"].strftime("%Y-%m-%d") if active_sub.get("expires_at") else "—"
+        sub_line = f"{active_sub['service_name']} — {active_sub['plan_name']} (حتى {exp})"
+
+    text = (
+        f"👤 *المستخدم #{uid}*\n"
+        f"📛 الاسم: {user.get('full_name') or '—'}\n"
+        f"🔗 يوزر: @{user.get('username') or '—'}\n"
+        f"🌍 الدولة: {user.get('country') or '—'}\n"
+        f"🗣️ اللغة: {user.get('lang', 'ar')}\n"
+        f"📅 انضم: {joined}\n"
+        f"🟢 الحالة: {ban_icon}\n"
+        f"📦 الطلبات: {stats['total_orders']}\n"
+        f"📋 الاشتراكات: {stats['total_subs']}\n"
+        f"🔑 الاشتراك الحالي: {sub_line}"
+    )
+
+    if user["is_banned"]:
+        ban_btn = InlineKeyboardButton("✅ رفع الحظر", callback_data=f"usrunban_{uid}")
+    else:
+        ban_btn = InlineKeyboardButton("🚫 حظر", callback_data=f"usrban_{uid}")
+
+    kbd = [
+        [ban_btn],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="wiz_users")],
+    ]
+    await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup(kbd), parse_mode="Markdown")
+    return USR_DETAIL
+
+
+async def cb_user_ban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    uid = int(q.data.replace("usrban_", ""))
+    db.ban_user(uid)
+    await q.answer("🚫 تم حظر المستخدم", show_alert=True)
+    q.data = f"usrdetail_{uid}"
+    return await cb_user_detail(update, context)
+
+
+async def cb_user_unban(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    uid = int(q.data.replace("usrunban_", ""))
+    db.unban_user(uid)
+    await q.answer("✅ تم رفع الحظر", show_alert=True)
+    q.data = f"usrdetail_{uid}"
+    return await cb_user_detail(update, context)
+
 def get_wizard_handlers():
     CANCEL = [CallbackQueryHandler(wizard_cancel, pattern="^wizard_cancel$")]
 
@@ -1842,6 +1990,26 @@ def get_wizard_handlers():
                 SUB_EXTEND: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, cb_sub_extend_do),
                     CallbackQueryHandler(cb_sub_detail,        pattern="^subdetail_"),
+                ],
+            }, fallbacks=CANCEL, per_message=False, allow_reentry=True),
+
+        ConversationHandler(
+            entry_points=[CallbackQueryHandler(cb_users_main, pattern="^wiz_users$")],
+            states={
+                USR_MAIN: [
+                    CallbackQueryHandler(cb_users_filter,       pattern="^usrfilter_"),
+                    CallbackQueryHandler(cb_users_page,         pattern="^usrpage_"),
+                    CallbackQueryHandler(cb_user_detail,        pattern="^usrdetail_"),
+                    CallbackQueryHandler(cb_users_search_start, pattern="^usrsearch_start$"),
+                ],
+                USR_SEARCH: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, cb_users_search_handle),
+                ],
+                USR_DETAIL: [
+                    CallbackQueryHandler(cb_users_main,   pattern="^wiz_users$"),
+                    CallbackQueryHandler(cb_user_detail,  pattern="^usrdetail_"),
+                    CallbackQueryHandler(cb_user_ban,     pattern="^usrban_"),
+                    CallbackQueryHandler(cb_user_unban,   pattern="^usrunban_"),
                 ],
             }, fallbacks=CANCEL, per_message=False, allow_reentry=True),
     ]
