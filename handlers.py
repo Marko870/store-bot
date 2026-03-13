@@ -826,6 +826,7 @@ async def cb_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     lang = get_lang(q.from_user.id)
     context.user_data[AWAITING_SUPPORT] = True
+    db.set_user_state(q.from_user.id, AWAITING_SUPPORT)
     await q.edit_message_text(
         t("support_prompt", lang),
         parse_mode="Markdown",
@@ -836,12 +837,15 @@ async def cb_support(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def handle_support_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not context.user_data.get(AWAITING_SUPPORT):
+    uid = update.effective_user.id
+    in_memory = context.user_data.get(AWAITING_SUPPORT)
+    db_state  = db.get_user_state(uid)
+    if not in_memory and db_state != AWAITING_SUPPORT:
         return False
 
-    lang      = get_lang(update.effective_user.id)
-    ticket_id = db.create_ticket(update.effective_user.id, update.message.text)
-    user      = db.get_user(update.effective_user.id)
+    lang      = get_lang(uid)
+    ticket_id = db.create_ticket(uid, update.message.text)
+    user      = db.get_user(uid)
     username  = f"@{user['username']}" if user.get("username") else "—"
 
     await update.message.reply_text(t("support_sent", lang), parse_mode="Markdown",
@@ -856,18 +860,19 @@ async def handle_support_message(update: Update, context: ContextTypes.DEFAULT_T
                 text=(
                     f"🎫 *تذكرة دعم جديدة #{ticket_id}*\n\n"
                     f"👤 {user['full_name']} | {username}\n"
-                    f"🆔 `{update.effective_user.id}`\n\n"
+                    f"🆔 `{uid}`\n\n"
                     f"💬 {update.message.text}"
                 ),
                 parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton("💬 رد", callback_data=f"replyticket_{ticket_id}_{update.effective_user.id}")
+                    InlineKeyboardButton("💬 رد", callback_data=f"replyticket_{ticket_id}_{uid}")
                 ]])
             )
         except Exception as e:
             logger.error(f"Ticket notify failed: {e}")
 
     context.user_data.pop(AWAITING_SUPPORT, None)
+    db.clear_user_state(uid)
     return True
 
 
