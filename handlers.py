@@ -993,12 +993,12 @@ async def handle_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if await handle_recharge_text(update, context):
         return
 
-    # ٤. إدخال ديناميكي (رقم هاتف، كمية، إلخ)
-    if await handle_input_response(update, context):
+    # ٤. رسالة دعم — قبل handle_input_response لأن state DB قد يتعارض
+    if await handle_support_message(update, context):
         return
 
-    # ٤. رسالة دعم
-    if await handle_support_message(update, context):
+    # ٥. إدخال ديناميكي (رقم هاتف، كمية، إلخ)
+    if await handle_input_response(update, context):
         return
 
 
