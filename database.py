@@ -863,3 +863,80 @@ class Database:
             "open_tickets":   self.fetchone("SELECT COUNT(*) as c FROM tickets WHERE status='open'")["c"],
         }
 
+    def get_revenue_by_period(self, period="month"):
+        """Revenue + order count grouped by day for the given period."""
+        if period == "day":
+            interval = "1 day"
+            trunc = "hour"
+        elif period == "week":
+            interval = "7 days"
+            trunc = "day"
+        else:  # month
+            interval = "30 days"
+            trunc = "day"
+
+        return self.fetch(f"""
+            SELECT
+                DATE_TRUNC('{trunc}', paid_at) as period,
+                COALESCE(SUM(amount), 0) as revenue,
+                COUNT(*) as orders
+            FROM orders
+            WHERE status='paid'
+              AND paid_at >= NOW() - INTERVAL '{interval}'
+            GROUP BY 1
+            ORDER BY 1
+        """)
+
+    def get_revenue_by_service(self, period="month"):
+        """Revenue per service for the given period."""
+        if period == "day":
+            interval = "1 day"
+        elif period == "week":
+            interval = "7 days"
+        else:
+            interval = "30 days"
+
+        return self.fetch(f"""
+            SELECT
+                s.name_ar as service_name,
+                COALESCE(SUM(o.amount), 0) as revenue,
+                COUNT(*) as orders
+            FROM orders o
+            JOIN services s ON o.service_id = s.id
+            WHERE o.status='paid'
+              AND o.paid_at >= NOW() - INTERVAL '{interval}'
+            GROUP BY s.id, s.name_ar
+            ORDER BY revenue DESC
+        """)
+
+    def get_summary_stats(self, period="month"):
+        """Quick summary numbers for a period."""
+        if period == "day":
+            interval = "1 day"
+        elif period == "week":
+            interval = "7 days"
+        else:
+            interval = "30 days"
+
+        revenue = self.fetchone(f"""
+            SELECT COALESCE(SUM(amount),0) as c FROM orders
+            WHERE status='paid' AND paid_at >= NOW() - INTERVAL '{interval}'
+        """)
+        orders = self.fetchone(f"""
+            SELECT COUNT(*) as c FROM orders
+            WHERE status='paid' AND paid_at >= NOW() - INTERVAL '{interval}'
+        """)
+        new_users = self.fetchone(f"""
+            SELECT COUNT(*) as c FROM users
+            WHERE joined_at >= NOW() - INTERVAL '{interval}'
+        """)
+        new_subs = self.fetchone(f"""
+            SELECT COUNT(*) as c FROM subscriptions
+            WHERE started_at >= NOW() - INTERVAL '{interval}'
+        """)
+        return {
+            "revenue":   round(revenue["c"], 2) if revenue else 0,
+            "orders":    orders["c"] if orders else 0,
+            "new_users": new_users["c"] if new_users else 0,
+            "new_subs":  new_subs["c"] if new_subs else 0,
+        }
