@@ -358,19 +358,22 @@ async def _ask_next_option(q_or_msg, context, lang, prefix_text=""):
         prompt = f"{prefix_text}\n\n🔸 *{opt['question']}*" if prefix_text else f"🔸 *{opt['question']}*"
         if hasattr(q_or_msg, "edit_message_text"):
             await q_or_msg.edit_message_text(prompt, parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton(t("cancel", lang), callback_data="main_menu")
-                ]]))
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 رجوع", callback_data=f"plan_{flow['plan_id']}")],
+                    [InlineKeyboardButton(t("cancel", lang), callback_data="main_menu")]
+                ]))
         else:
             await q_or_msg.reply_text(prompt, parse_mode="Markdown",
-                reply_markup=InlineKeyboardMarkup([[
-                    InlineKeyboardButton(t("cancel", lang), callback_data="main_menu")
-                ]]))
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🔙 رجوع", callback_data=f"plan_{flow['plan_id']}")],
+                    [InlineKeyboardButton(t("cancel", lang), callback_data="main_menu")]
+                ]))
     else:
         # خيارات أزرار
         btns = [[InlineKeyboardButton(c, callback_data=f"opt_{step}_{i}")]
                 for i, c in enumerate(opt["choices"])]
         prompt = f"{prefix_text}\n\n🔸 *{opt['question']}*" if prefix_text else f"🔸 *{opt['question']}*"
+        btns.append([InlineKeyboardButton("🔙 رجوع", callback_data=f"plan_{flow['plan_id']}")])
         if hasattr(q_or_msg, "edit_message_text"):
             await q_or_msg.edit_message_text(prompt, parse_mode="Markdown",
                 reply_markup=InlineKeyboardMarkup(btns))
@@ -549,9 +552,10 @@ async def cb_send_proof(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await q.edit_message_text(
         t("proof_prompt", lang),
         parse_mode="Markdown",
-        reply_markup=InlineKeyboardMarkup([[
-            InlineKeyboardButton(t("cancel", lang), callback_data=f"checkout_{plan_id}")
-        ]])
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 رجوع", callback_data=f"checkout_{plan_id}")],
+            [InlineKeyboardButton(t("cancel", lang), callback_data="main_menu")]
+        ])
     )
 
 
@@ -988,7 +992,7 @@ async def cb_exchange_op(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("💳 شام كاش",       callback_data="exc_method_shamcash")],
         [InlineKeyboardButton("🏦 حوالة",         callback_data="exc_method_hawala")],
         [InlineKeyboardButton("🤝 يد بيد",        callback_data="exc_method_hand")],
-        [InlineKeyboardButton("🔙 رجوع",          callback_data="exchange")],
+        [InlineKeyboardButton("🔙 رجوع",          callback_data="svccat_exchange")],
     ])
     await q.edit_message_text(text, reply_markup=kbd, parse_mode="Markdown")
 
@@ -1033,7 +1037,10 @@ async def cb_exchange_method(update: Update, context: ContextTypes.DEFAULT_TYPE)
         f"📌 الحد الأدنى: `5 USDT`\n\n"
         f"أرسل المبلغ بـ USDT:"
     )
-    kbd = InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="main_menu")]])
+    kbd = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🔙 رجوع", callback_data=f"exc_op_{op}"),
+         InlineKeyboardButton("❌ إلغاء", callback_data="main_menu")]
+    ])
     await q.edit_message_text(text, reply_markup=kbd, parse_mode="Markdown")
     db.set_user_state(q.from_user.id, EXCHANGE_AMOUNT)
 
@@ -1470,7 +1477,8 @@ async def cb_recharge_amount(update: Update, context: ContextTypes.DEFAULT_TYPE)
     save_flow(uid, {"svc_id": svc_id, "amount": amount, "usdt": usdt, "step": "phone"})
     db.set_user_state(uid, "RECHARGE_PHONE")
     await q.edit_message_text(text, reply_markup=InlineKeyboardMarkup([
-        [InlineKeyboardButton("الغاء", callback_data="services")]
+        [InlineKeyboardButton("🔙 رجوع", callback_data=f"svc_{svc_id}"),
+         InlineKeyboardButton("❌ إلغاء", callback_data="services")]
     ]))
 
 
@@ -1488,7 +1496,10 @@ async def cb_recharge_custom_amount(update: Update, context: ContextTypes.DEFAUL
         if limits.get("max_amount"): hint += " (الحد الاقصى: " + f"{limits['max_amount']:,.0f}" + " ل.س)"
     await q.edit_message_text(
         "ادخل المبلغ بالليرة السورية:" + hint,
-        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("الغاء", callback_data="services")]]))
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🔙 رجوع", callback_data="svccat_recharge"),
+             InlineKeyboardButton("❌ إلغاء", callback_data="services")]
+        ]))
 
 
 
@@ -1596,7 +1607,10 @@ async def handle_recharge_text(update: Update, context: ContextTypes.DEFAULT_TYP
         db.set_user_state(uid, "RECHARGE_PHONE")
         await update.message.reply_text(
             "المبلغ: " + f"{amount:,.0f}" + " ل.س = " + str(usdt) + " USDT\n\nادخل رقم هاتفك:",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("الغاء", callback_data="services")]]))
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 رجوع", callback_data="svccat_recharge"),
+                 InlineKeyboardButton("❌ إلغاء", callback_data="services")]
+            ]))
         return True
 
     if state == "RECHARGE_PHONE":
@@ -1633,8 +1647,9 @@ async def handle_recharge_text(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(
             confirm_text,
             reply_markup=InlineKeyboardMarkup([
-                [InlineKeyboardButton("تأكيد", callback_data="rchconfirm_yes"),
-                 InlineKeyboardButton("الغاء", callback_data="rchconfirm_no")]
+                [InlineKeyboardButton("✅ تأكيد", callback_data="rchconfirm_yes"),
+                 InlineKeyboardButton("🔙 رجوع", callback_data="svccat_recharge"),
+                 InlineKeyboardButton("❌ إلغاء", callback_data="services")]
             ]))
         return True
 
@@ -1676,7 +1691,8 @@ async def cb_recharge_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE
         "بعد الدفع، أرسل صورة إشعار التحويل هنا.",
         parse_mode="Markdown",
         reply_markup=InlineKeyboardMarkup([
-            [InlineKeyboardButton("❌ إلغاء", callback_data="rchconfirm_no")]
+            [InlineKeyboardButton("🔙 رجوع", callback_data="svccat_recharge"),
+             InlineKeyboardButton("❌ إلغاء", callback_data="main_menu")]
         ]))
 
 
@@ -1828,4 +1844,5 @@ def register_handlers(app: Application):
 async def _cmd_admin_shortcut(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from admin_wizard import cmd_admin
     await cmd_admin(update, context)
+
 
