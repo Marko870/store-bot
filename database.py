@@ -181,6 +181,29 @@ class Database:
                     credentials TEXT DEFAULT '{}'
                 );
 
+                CREATE TABLE IF NOT EXISTS currency_exchange_rates (
+                    id         SERIAL PRIMARY KEY,
+                    op         TEXT NOT NULL,    -- 'buy' or 'sell'
+                    method     TEXT NOT NULL,    -- 'normal' or 'syriatel'
+                    rate       REAL NOT NULL,    -- سعر الليرة مقابل 1 USDT
+                    updated_at TIMESTAMP DEFAULT NOW(),
+                    UNIQUE(op, method)
+                );
+
+                CREATE TABLE IF NOT EXISTS currency_orders (
+                    id          SERIAL PRIMARY KEY,
+                    user_id     BIGINT REFERENCES users(id),
+                    op          TEXT NOT NULL,    -- 'buy' or 'sell'
+                    amount_usdt REAL NOT NULL,
+                    amount_syp  REAL NOT NULL,
+                    method      TEXT NOT NULL,    -- 'syriatel'/'shamcash'/'hawala'/'hand'
+                    rate        REAL NOT NULL,
+                    phone       TEXT DEFAULT '',
+                    status      TEXT DEFAULT 'pending',
+                    created_at  TIMESTAMP DEFAULT NOW(),
+                    paid_at     TIMESTAMP
+                );
+
                 CREATE TABLE IF NOT EXISTS tickets (
                     id          SERIAL PRIMARY KEY,
                     user_id     BIGINT REFERENCES users(id),
@@ -827,6 +850,69 @@ class Database:
         )
 
     # ══════════════════════════════
+    # ══════════════════════════════
+    #   Currency Exchange
+    # ══════════════════════════════
+
+    def get_exchange_rates_all(self):
+        """Returns dict: {buy_normal, buy_syriatel, sell_normal, sell_syriatel}"""
+        rows = self.fetch("SELECT op, method, rate FROM currency_exchange_rates")
+        result = {
+            "buy_normal":    0,
+            "buy_syriatel":  0,
+            "sell_normal":   0,
+            "sell_syriatel": 0,
+        }
+        for r in (rows or []):
+            key = f"{r['op']}_{r['method']}"
+            if key in result:
+                result[key] = r["rate"]
+        return result
+
+    def set_exchange_rate(self, op, method, rate):
+        self.execute("""
+            INSERT INTO currency_exchange_rates (op, method, rate)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (op, method) DO UPDATE SET rate=%s, updated_at=NOW()
+        """, (op, method, rate, rate))
+
+    def create_currency_order(self, user_id, op, amount_usdt, amount_syp, method, rate, phone=""):
+        return self.execute_returning("""
+            INSERT INTO currency_orders
+            (user_id, op, amount_usdt, amount_syp, method, rate, phone)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            RETURNING id
+        """, (user_id, op, amount_usdt, amount_syp, method, rate, phone))
+
+    def get_currency_order(self, order_id):
+        return self.fetchone("""
+            SELECT co.*, u.username, u.full_name
+            FROM currency_orders co
+            JOIN users u ON co.user_id = u.id
+            WHERE co.id=%s
+        """, (order_id,))
+
+    def complete_currency_order(self, order_id):
+        self.execute(
+            "UPDATE currency_orders SET status='completed', paid_at=NOW() WHERE id=%s",
+            (order_id,)
+        )
+
+    def reject_currency_order(self, order_id):
+        self.execute(
+            "UPDATE currency_orders SET status='rejected' WHERE id=%s",
+            (order_id,)
+        )
+
+    def get_pending_currency_orders(self):
+        return self.fetch("""
+            SELECT co.*, u.username, u.full_name
+            FROM currency_orders co
+            JOIN users u ON co.user_id = u.id
+            WHERE co.status='pending'
+            ORDER BY co.created_at DESC
+        """)
+
     #   Tickets
     # ══════════════════════════════
 
