@@ -162,8 +162,7 @@ async def cb_services_category(update: Update, context: ContextTypes.DEFAULT_TYP
             return
         if len(recharge_svcs) == 1:
             # خدمة واحدة — نفتحها مباشرة
-            q.data = f"svc_{recharge_svcs[0]['id']}"
-            await cb_service_detail(update, context)
+            await cb_recharge_start(update, context, svc_id=recharge_svcs[0]['id'])
         else:
             # أكثر من خدمة — نعرضهم
             btns = [[InlineKeyboardButton(s["name_ar"], callback_data=f"svc_{s['id']}")] for s in recharge_svcs]
@@ -1402,12 +1401,13 @@ async def handle_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #   خدمة التعبئة / سيرياتيل كاش
 # ══════════════════════════════════════════
 
-async def cb_recharge_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def cb_recharge_start(update: Update, context: ContextTypes.DEFAULT_TYPE, svc_id: int = None):
     """أول خطوة: اظهار سعر الصرف + المبالغ الجاهزة"""
     q = update.callback_query; await q.answer()
-    lang   = get_lang(q.from_user.id)
-    svc_id = int(q.data.split("_")[1])
-    svc    = db.get_service(svc_id)
+    lang = get_lang(q.from_user.id)
+    if svc_id is None:
+        svc_id = int(q.data.split("_")[1])
+    svc = db.get_service(svc_id)
     if not svc:
         await q.answer("خطأ", show_alert=True); return
 
