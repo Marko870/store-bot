@@ -1879,7 +1879,7 @@ def register_handlers(app: Application):
     app.add_handler(CallbackQueryHandler(cb_quickdel_confirm, pattern=r"^quickdel_confirm_\d+$"))
 
     # زر الرجوع المركزي
-    app.add_handler(CallbackQueryHandler(cb_go_back, pattern=r"^back_"))
+    app.add_handler(CallbackQueryHandler(cb_go_back, pattern=r"^back_"), group=-1)
 
     # رسائل واردة
     app.add_handler(MessageHandler(
