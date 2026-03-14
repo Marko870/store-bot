@@ -759,7 +759,29 @@ async def cb_go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.pop("exc_order_id", None)
 
     dest = q.data.replace("back_", "", 1)
-    q.data = dest
+    # لا نعدل q.data لأنه read-only في python-telegram-bot
+    # بدل ذلك نمرر dest مباشرة لكل دالة عبر update مؤقت
+
+    # نستخدم fake update يحمل dest كـ data
+    class _FakeQuery:
+        def __init__(self, original_q, new_data):
+            self._q = original_q
+            self.data = new_data
+            self.from_user = original_q.from_user
+            self.message = original_q.message
+            self.id = original_q.id
+        async def answer(self, *a, **kw):
+            pass  # سبق جاوبنا
+        async def edit_message_text(self, *a, **kw):
+            return await self._q.edit_message_text(*a, **kw)
+        async def edit_message_reply_markup(self, *a, **kw):
+            return await self._q.edit_message_reply_markup(*a, **kw)
+
+    fake_update = update
+    # نعمل نسخة من update مع q.data الجديد
+    original_q = update.callback_query
+    fq = _FakeQuery(original_q, dest)
+    update._callback_query = fq  # نؤقت نبدل الـ query
 
     async def _navigate():
         if dest == "main_menu":
@@ -771,13 +793,14 @@ async def cb_go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
         elif dest.startswith("svc_"):
             await cb_service_detail(update, context)
         elif dest.startswith("plan_"):
+            fq.data = dest
             await cb_plan_detail(update, context)
         elif dest.startswith("checkout_"):
             await cb_checkout(update, context)
         elif dest.startswith("variant_"):
             await cb_variant_detail(update, context)
         elif dest == "exchange" or dest == "svccat_exchange":
-            q.data = "svccat_exchange"
+            fq.data = "svccat_exchange"
             await cb_services_category(update, context)
         elif dest.startswith("exc_op_"):
             await cb_exchange_op(update, context)
