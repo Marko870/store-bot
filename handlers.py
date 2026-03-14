@@ -910,24 +910,16 @@ async def cb_exchange_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """يظهر خيار شراء أو بيع USDT"""
     q = update.callback_query
     await q.answer()
-    lang = get_lang(q.from_user.id)
 
-    rates = db.get_exchange_rates_all()
     text = (
         "💱 *تصريف العملات*\n\n"
-        f"📈 سعر شراء USDT:\n"
-        f"• عادي: `{rates['buy_normal']:,.0f}` ل.س\n"
-        f"• سيرياتيل: `{rates['buy_syriatel']:,.0f}` ل.س\n\n"
-        f"📉 سعر بيع USDT:\n"
-        f"• عادي: `{rates['sell_normal']:,.0f}` ل.س\n"
-        f"• سيرياتيل: `{rates['sell_syriatel']:,.0f}` ل.س\n\n"
-        f"الحد الأدنى: `5 USDT`"
+        "اختر العملية التي تريد تنفيذها:"
     )
 
     kbd = InlineKeyboardMarkup([
         [InlineKeyboardButton("🛒 شراء USDT",  callback_data="exc_op_buy"),
          InlineKeyboardButton("💰 بيع USDT",   callback_data="exc_op_sell")],
-        [InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="services")],
     ])
     await q.edit_message_text(text, reply_markup=kbd, parse_mode="Markdown")
 
@@ -976,7 +968,7 @@ async def cb_exchange_method(update: Update, context: ContextTypes.DEFAULT_TYPE)
         await q.edit_message_text(text, reply_markup=kbd, parse_mode="Markdown")
         return
 
-    # باقي الطرق — نطلب المبلغ
+    # باقي الطرق — نطلب المبلغ مع عرض السعر
     rates = db.get_exchange_rates_all()
     rate_key = f"{op}_{'syriatel' if method == 'syriatel' else 'normal'}"
     rate = rates.get(rate_key, 0)
@@ -984,15 +976,16 @@ async def cb_exchange_method(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     method_label = METHOD_LABELS[method]
     op_label = OP_LABELS[op]
+    pay_recv = "ستدفع" if op == "buy" else "ستستلم"
 
     text = (
         f"💱 *{op_label}* — {method_label}\n\n"
-        f"السعر: `{rate:,.0f}` ل.س لكل USDT\n\n"
-        f"أرسل المبلغ بـ USDT (الحد الأدنى 5):"
+        f"💵 السعر: `{rate:,.0f}` ل.س لكل USDT\n"
+        f"📌 الحد الأدنى: `5 USDT`\n\n"
+        f"أرسل المبلغ بـ USDT:"
     )
     kbd = InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="main_menu")]])
     await q.edit_message_text(text, reply_markup=kbd, parse_mode="Markdown")
-
     db.set_user_state(q.from_user.id, EXCHANGE_AMOUNT)
 
 
@@ -1784,3 +1777,4 @@ def register_handlers(app: Application):
 async def _cmd_admin_shortcut(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from admin_wizard import cmd_admin
     await cmd_admin(update, context)
+
