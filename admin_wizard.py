@@ -20,6 +20,12 @@ def is_admin(uid): return uid in cfg.ADMIN_IDS
 def cancel_kb():
     return InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="wizard_cancel")]])
 
+def back_cancel_kb(back_data="admin_back"):
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("◀️ رجوع", callback_data=back_data),
+         InlineKeyboardButton("❌ إلغاء", callback_data="wizard_cancel")]
+    ])
+
 # ══ حالات المحادثات ══
 (SVC_TYPE, SVC_NAME_AR, SVC_NAME_EN, SVC_DESC, SVC_MIN) = range(10, 15)
 (PLAN_SVC, PLAN_NAME_AR, PLAN_NAME_EN, PLAN_DAYS, PLAN_PRICE, PLAN_FEATS, PLAN_OPTS_Q) = range(20, 27)
@@ -59,7 +65,7 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("✏️ تعديل خدمة",    callback_data="wiz_edit_svc"),
          InlineKeyboardButton("🗑️ حذف",           callback_data="wiz_delete")],
         [InlineKeyboardButton("📋 عرض الخدمات",   callback_data="wiz_list"),
-         InlineKeyboardButton("🗂️ أنواع الخدمة",  callback_data="wiz_variants")],
+         InlineKeyboardButton("🗂️ أنواع الاشتراكات",  callback_data="wiz_variants")],
         [InlineKeyboardButton("📱 إعدادات التعبئة", callback_data="wiz_recharge"),
          InlineKeyboardButton("🎁 اشتراك يدوي",   callback_data="wiz_mansub")],
         [InlineKeyboardButton("⏳ الطلبات",        callback_data="wiz_orders"),
@@ -188,10 +194,14 @@ async def wiz_add_svc_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(q.from_user.id): return ConversationHandler.END
     context.user_data["wiz"] = {}
     types = db.get_service_types()
-    btns  = [[InlineKeyboardButton(t["label_ar"], callback_data=f"svctype_{t['id']}")] for t in types]
-    btns.append([InlineKeyboardButton("❌ إلغاء", callback_data="wizard_cancel")])
+    # فلترة أنواع الخدمة — عرض الكل مع تمييز الاشتراكات
+    btns = []
+    for t in types:
+        icon = "⭐" if t["name"] == "subscription" else "•"
+        btns.append([InlineKeyboardButton(f"{icon} {t['label_ar']}", callback_data=f"svctype_{t['id']}")])
+    btns.append([InlineKeyboardButton("◀️ رجوع", callback_data="admin_back")])
     await q.edit_message_text(
-        "➕ *خدمة جديدة*\n\nالخطوة 1/5 — اختر *نوع الخدمة*:",
+        "➕ *خدمة جديدة*\n\nالخطوة 1/5 — اختر *نوع الخدمة*:\n_(⭐ = اشتراك رقمي)_",
         parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
     return SVC_TYPE
 
@@ -201,7 +211,7 @@ async def svc_type(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["wiz"]["type_id"] = int(q.data.split("_")[1])
     await q.edit_message_text(
         "الخطوة 2/5 — أرسل *اسم الخدمة بالعربي*:",
-        parse_mode="Markdown", reply_markup=cancel_kb())
+        parse_mode="Markdown", reply_markup=back_cancel_kb("wiz_add_svc"))
     return SVC_NAME_AR
 
 
@@ -209,7 +219,7 @@ async def svc_name_ar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["wiz"]["name_ar"] = update.message.text
     await update.message.reply_text(
         "الخطوة 3/5 — أرسل *اسم الخدمة بالإنجليزي*:",
-        parse_mode="Markdown", reply_markup=cancel_kb())
+        parse_mode="Markdown", reply_markup=back_cancel_kb("wiz_add_svc"))
     return SVC_NAME_EN
 
 
@@ -217,7 +227,7 @@ async def svc_name_en(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["wiz"]["name_en"] = update.message.text
     await update.message.reply_text(
         "الخطوة 4/5 — أرسل *وصف الخدمة* (أو `-` لتخطي):",
-        parse_mode="Markdown", reply_markup=cancel_kb())
+        parse_mode="Markdown", reply_markup=back_cancel_kb("wiz_add_svc"))
     return SVC_DESC
 
 
@@ -226,7 +236,7 @@ async def svc_desc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["wiz"]["desc"] = "" if text == "-" else text
     await update.message.reply_text(
         "الخطوة 5/5 — أرسل *الحد الأدنى للطلب* (رقم، أو `0` بدون حد):",
-        parse_mode="Markdown", reply_markup=cancel_kb())
+        parse_mode="Markdown", reply_markup=back_cancel_kb("wiz_add_svc"))
     return SVC_MIN
 
 
@@ -301,7 +311,7 @@ async def plan_name_ar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["wiz"]["name_ar"] = update.message.text
     await update.message.reply_text(
         "أرسل *اسم الخطة بالإنجليزي*:",
-        parse_mode="Markdown", reply_markup=cancel_kb())
+        parse_mode="Markdown", reply_markup=back_cancel_kb("wiz_add_plan"))
     return PLAN_NAME_EN
 
 
@@ -313,7 +323,8 @@ async def plan_name_en(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("365 يوم", callback_data="pdays_365")],
         [InlineKeyboardButton("لا ينطبق (رصيد/تحويل)", callback_data="pdays_0")],
         [InlineKeyboardButton("✏️ أدخل يدوياً", callback_data="pdays_custom")],
-        [InlineKeyboardButton("❌ إلغاء", callback_data="wizard_cancel")],
+        [InlineKeyboardButton("◀️ رجوع", callback_data="wiz_add_plan"),
+         InlineKeyboardButton("❌ إلغاء", callback_data="wizard_cancel")],
     ])
     await update.message.reply_text("اختر *المدة*:", parse_mode="Markdown", reply_markup=kb)
     return PLAN_DAYS
@@ -355,7 +366,7 @@ async def plan_price(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return PLAN_PRICE
     await update.message.reply_text(
         "أرسل *مميزات الخطة* (كل ميزة في سطر)\nأو `-` لتخطي:",
-        parse_mode="Markdown", reply_markup=cancel_kb())
+        parse_mode="Markdown", reply_markup=back_cancel_kb("wiz_add_plan"))
     return PLAN_FEATS
 
 
@@ -367,7 +378,8 @@ async def plan_feats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("✅ نعم، أضف خيارات", callback_data="plan_add_opts"),
          InlineKeyboardButton("⏭️ تخطي",            callback_data="plan_skip_opts")],
-        [InlineKeyboardButton("❌ إلغاء", callback_data="wizard_cancel")],
+        [InlineKeyboardButton("◀️ رجوع", callback_data="wiz_add_plan"),
+         InlineKeyboardButton("❌ إلغاء", callback_data="wizard_cancel")],
     ])
     await update.message.reply_text(
         "🔘 *هل تريد إضافة خيارات/حقول للزبون؟*\n\n"
@@ -731,7 +743,7 @@ async def rate_svc(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_text = f"\nالسعر الحالي: `{current['rate']:,.0f}` ل.س" if current else ""
     await q.edit_message_text(
         f"💱 أرسل السعر الجديد (كم ليرة سورية = 1 USDT):{current_text}",
-        parse_mode="Markdown", reply_markup=cancel_kb())
+        parse_mode="Markdown", reply_markup=back_cancel_kb("wiz_rate"))
     return RATE_VALUE
 
 
@@ -1187,16 +1199,18 @@ async def wiz_variants_start(update: Update, context: ContextTypes.DEFAULT_TYPE)
     q = update.callback_query; await q.answer()
     if not is_admin(q.from_user.id): return ConversationHandler.END
     services = db.get_services()
+    # فلترة الاشتراكات الرقمية فقط
     sub_services = [s for s in (services or []) if s.get("type_name") == "subscription"]
     if not sub_services:
         await q.edit_message_text(
-            "❌ لا توجد خدمات اشتراكات",
+            "❌ لا توجد خدمات اشتراكات رقمية\n\nأضف خدمة من نوع *اشتراك رقمي* أولاً.",
+            parse_mode="Markdown",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ رجوع", callback_data="admin_back")]]))
         return ConversationHandler.END
-    btns = [[InlineKeyboardButton(s["name_ar"], callback_data=f"varsvc_{s['id']}")] for s in sub_services]
-    btns.append([InlineKeyboardButton("❌ إلغاء", callback_data="wizard_cancel")])
+    btns = [[InlineKeyboardButton("📺 " + s["name_ar"], callback_data=f"varsvc_{s['id']}")] for s in sub_services]
+    btns.append([InlineKeyboardButton("◀️ رجوع", callback_data="admin_back")])
     await q.edit_message_text(
-        "🗂️ *أنواع الخدمة*\n\nاختر الخدمة لإدارة أنواعها:",
+        "🗂️ *أنواع الخدمة — الاشتراكات الرقمية*\n\nاختر الخدمة لإدارة أنواعها:",
         parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
     return VAR_SVC
 
@@ -1222,7 +1236,7 @@ async def var_svc(update: Update, context: ContextTypes.DEFAULT_TYPE):
         lines.append("_لا توجد أنواع بعد_")
 
     btns.append([InlineKeyboardButton("➕ نوع جديد", callback_data=f"varadd_{svc_id}")])
-    btns.append([InlineKeyboardButton("❌ إلغاء",    callback_data="wizard_cancel")])
+    btns.append([InlineKeyboardButton("◀️ رجوع",    callback_data="wiz_variants")])
     await q.edit_message_text(
         "\n".join(lines),
         parse_mode="Markdown", reply_markup=InlineKeyboardMarkup(btns))
@@ -1235,7 +1249,7 @@ async def var_add_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["wiz"]["svc_id"] = svc_id
     await q.edit_message_text(
         "أرسل *اسم النوع بالعربي*:\nمثال: حساب مشترك، Business، عائلي",
-        parse_mode="Markdown", reply_markup=cancel_kb())
+        parse_mode="Markdown", reply_markup=back_cancel_kb(f"varsvc_{svc_id}"))
     return VAR_NAME_AR
 
 
@@ -1243,7 +1257,7 @@ async def var_name_ar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["wiz"]["var_name_ar"] = update.message.text.strip()
     await update.message.reply_text(
         "أرسل *اسم النوع بالإنجليزي*:",
-        parse_mode="Markdown", reply_markup=cancel_kb())
+        parse_mode="Markdown", reply_markup=back_cancel_kb("wiz_variants"))
     return VAR_NAME_EN
 
 
@@ -2411,3 +2425,4 @@ def get_wizard_handlers():
                 ],
             }, fallbacks=CANCEL, per_message=False, allow_reentry=True),
     ]
+
