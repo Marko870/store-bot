@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application, CommandHandler, CallbackQueryHandler,
-    MessageHandler, filters, ContextTypes
+    MessageHandler, filters, ContextTypes, ApplicationHandlerStop
 )
 from database import Database
 from config import Config
@@ -772,7 +772,7 @@ async def cb_go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         # fallback — الرئيسية
         await cb_main_menu(update, context)
-
+    raise ApplicationHandlerStop
 
 # ══════════════════════════════════════════
 #   اشتراكاتي
