@@ -394,7 +394,12 @@ async def cb_plan_option(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.answer("❌ انتهت الجلسة، اضغط /start", show_alert=True); return
     context.user_data["flow"] = flow
 
-    opt    = flow["options"][step]
+    # دايماً نقرأ الخيارات من DB مش من flow القديم
+    options = db.get_plan_options(flow["plan_id"])
+    flow["options"] = options
+    if step >= len(options):
+        await q.answer("❌ انتهت الجلسة، اضغط /start", show_alert=True); return
+    opt    = options[step]
     choice = opt["choices"][cidx]
     flow["answers"][opt["question"]] = choice
     flow["step"] = step + 1
@@ -409,9 +414,10 @@ async def cb_plan_option(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await q.edit_message_text(
             "📧 *أدخل إيميلك:*",
             parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton(t("cancel", lang), callback_data="main_menu")
-            ]])
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("🔙 رجوع", callback_data=f"back_plan_{flow['plan_id']}")],
+                [InlineKeyboardButton(t("cancel", lang), callback_data="main_menu")]
+            ])
         )
         return
 
@@ -735,44 +741,69 @@ async def cb_go_back(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     uid = q.from_user.id
 
-    # مسح أي state أو flow محفوظ
-    db.clear_user_state(uid)
-    db.clear_flow(uid)
+    # مسح كل الـ states من DB ومن الذاكرة
+    try: db.clear_user_state(uid)
+    except: pass
+    try: db.clear_flow(uid)
+    except: pass
     context.user_data.pop(AWAITING_INPUT, None)
     context.user_data.pop(AWAITING_PROOF, None)
     context.user_data.pop(AWAITING_SUPPORT, None)
     context.user_data.pop("flow", None)
+    context.user_data.pop("exc_op", None)
+    context.user_data.pop("exc_method", None)
+    context.user_data.pop("exc_rate", None)
+    context.user_data.pop("exc_amount", None)
+    context.user_data.pop("exc_phone", None)
+    context.user_data.pop("exc_syp", None)
+    context.user_data.pop("exc_order_id", None)
 
-    # استخراج الوجهة من الـ callback_data
-    # مثال: back_svccat_recharge → سيطلق cb_services_category
-    # مثال: back_services → سيطلق cb_services
-    # مثال: back_main_menu → سيطلق cb_main_menu
     dest = q.data.replace("back_", "", 1)
-
-    # نعدل الـ data ونعيد التوجيه
     q.data = dest
-    if dest == "main_menu":
-        await cb_main_menu(update, context)
-    elif dest == "services":
-        await cb_services(update, context)
-    elif dest.startswith("svccat_"):
-        await cb_services_category(update, context)
-    elif dest.startswith("svc_"):
-        await cb_service_detail(update, context)
-    elif dest.startswith("plan_"):
-        await cb_plan_detail(update, context)
-    elif dest.startswith("checkout_"):
-        await cb_checkout(update, context)
-    elif dest.startswith("variant_"):
-        await cb_variant_detail(update, context)
-    elif dest == "exchange":
-        await cb_exchange_start(update, context)
-    elif dest.startswith("exc_op_"):
-        await cb_exchange_op(update, context)
-    else:
-        # fallback — الرئيسية
-        await cb_main_menu(update, context)
+
+    async def _navigate():
+        if dest == "main_menu":
+            await cb_main_menu(update, context)
+        elif dest == "services":
+            await cb_services(update, context)
+        elif dest.startswith("svccat_"):
+            await cb_services_category(update, context)
+        elif dest.startswith("svc_"):
+            await cb_service_detail(update, context)
+        elif dest.startswith("plan_"):
+            await cb_plan_detail(update, context)
+        elif dest.startswith("checkout_"):
+            await cb_checkout(update, context)
+        elif dest.startswith("variant_"):
+            await cb_variant_detail(update, context)
+        elif dest == "exchange" or dest == "svccat_exchange":
+            q.data = "svccat_exchange"
+            await cb_services_category(update, context)
+        elif dest.startswith("exc_op_"):
+            await cb_exchange_op(update, context)
+        else:
+            await cb_main_menu(update, context)
+
+    try:
+        await _navigate()
+    except Exception as e:
+        # لو فشل edit_message_text (رسالة reply قديمة) — نبعت رسالة جديدة
+        logger.warning(f"cb_go_back edit failed ({dest}): {e}")
+        try:
+            lang = get_lang(uid)
+            kb = InlineKeyboardMarkup([
+                [InlineKeyboardButton("🏠 القائمة الرئيسية", callback_data="main_menu")],
+                [InlineKeyboardButton("🛒 الخدمات", callback_data="services")],
+            ])
+            await q.message.reply_text(
+                "🔙 تم الرجوع — اختر من القائمة:",
+                reply_markup=kb
+            )
+        except Exception:
+            pass
+
     raise ApplicationHandlerStop
+
 
 # ══════════════════════════════════════════
 #   اشتراكاتي
@@ -1818,6 +1849,9 @@ async def cb_recharge_reject(update: Update, context: ContextTypes.DEFAULT_TYPE)
 def register_handlers(app: Application):
     from admin_wizard import get_wizard_handlers
 
+    # زر الرجوع المركزي — group=-1 يعني أعلى أولوية من ConversationHandler
+    app.add_handler(CallbackQueryHandler(cb_go_back, pattern=r"^back_"), group=-1)
+
     # edit_country أولاً قبل الـ wizards
     app.add_handler(CallbackQueryHandler(cb_edit_country, pattern="^edit_country$"))
 
@@ -1878,9 +1912,6 @@ def register_handlers(app: Application):
     app.add_handler(CallbackQueryHandler(cb_quickdel_svc,     pattern=r"^quickdel_svc_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_quickdel_confirm, pattern=r"^quickdel_confirm_\d+$"))
 
-    # زر الرجوع المركزي
-    app.add_handler(CallbackQueryHandler(cb_go_back, pattern=r"^back_"), group=-1)
-
     # رسائل واردة
     app.add_handler(MessageHandler(
         (filters.PHOTO | filters.Document.ALL | filters.TEXT) & ~filters.COMMAND,
@@ -1891,4 +1922,5 @@ def register_handlers(app: Application):
 async def _cmd_admin_shortcut(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from admin_wizard import cmd_admin
     await cmd_admin(update, context)
+
 
