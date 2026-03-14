@@ -126,27 +126,77 @@ async def cb_set_lang(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cb_services(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
-    lang     = get_lang(q.from_user.id)
-    services = db.get_services()
+    lang = get_lang(q.from_user.id)
 
-    if not services:
-        await q.edit_message_text(t("no_services", lang),
-            reply_markup=InlineKeyboardMarkup([[
-                InlineKeyboardButton(t("back", lang), callback_data="main_menu")
-            ]]))
+    kbd = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📺 اشتراكات رقمية",     callback_data="svccat_subscription")],
+        [InlineKeyboardButton("📱 تعبئة سيرياتيل",     callback_data="svccat_recharge")],
+        [InlineKeyboardButton("💱 تصريف USDT",         callback_data="svccat_exchange")],
+        [InlineKeyboardButton(t("back", lang),          callback_data="main_menu")],
+    ])
+    await q.edit_message_text(
+        "🛒 *الخدمات*\n\nاختر التصنيف:",
+        reply_markup=kbd,
+        parse_mode="Markdown"
+    )
+
+
+async def cb_services_category(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """عرض خدمات تصنيف معين"""
+    q = update.callback_query; await q.answer()
+    lang = get_lang(q.from_user.id)
+    cat  = q.data.replace("svccat_", "")
+
+    # تعبئة الرصيد — تفتح flow مباشرة
+    if cat == "recharge":
+        services = db.get_services()
+        recharge_svcs = [s for s in (services or []) if s.get("type_name") == "recharge"]
+        if not recharge_svcs:
+            await q.edit_message_text(
+                "_(لا توجد خدمات تعبئة متاحة حالياً)_",
+                parse_mode="Markdown",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 رجوع", callback_data="services")
+                ]])
+            )
+            return
+        if len(recharge_svcs) == 1:
+            # خدمة واحدة — نفتحها مباشرة
+            q.data = f"svc_{recharge_svcs[0]['id']}"
+            await cb_service_detail(update, context)
+        else:
+            # أكثر من خدمة — نعرضهم
+            btns = [[InlineKeyboardButton(s["name_ar"], callback_data=f"svc_{s['id']}")] for s in recharge_svcs]
+            btns.append([InlineKeyboardButton("🔙 رجوع", callback_data="services")])
+            await q.edit_message_text("📱 *تعبئة رصيد*\n\nاختر الخدمة:", reply_markup=InlineKeyboardMarkup(btns), parse_mode="Markdown")
         return
 
-    # تجميع الخدمات حسب نوعها
-    TYPE_EMOJI = {"subscription": "📺", "recharge": "📱", "exchange": "💱"}
-    btns = []
-    for svc in services:
-        emoji = TYPE_EMOJI.get(svc.get("type_name", ""), "🔹")
-        name  = svc["name_ar"] if lang == "ar" else svc["name_en"]
-        btns.append([InlineKeyboardButton(f"{emoji} {name}", callback_data=f"svc_{svc['id']}")])
+    # تصريف USDT — تفتح flow مباشرة
+    if cat == "exchange":
+        await cb_exchange_start(update, context)
+        return
 
-    btns.append([InlineKeyboardButton(t("back", lang), callback_data="main_menu")])
-    await q.edit_message_text(t("services_title", lang), parse_mode="Markdown",
-                               reply_markup=InlineKeyboardMarkup(btns))
+    # اشتراكات رقمية — تعرض الخدمات
+    services = db.get_services()
+    filtered = [s for s in (services or []) if s.get("type_name") == "subscription"]
+
+    if not filtered:
+        await q.edit_message_text(
+            "📺 *اشتراكات رقمية*\n\n_(لا توجد خدمات متاحة حالياً)_",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("🔙 رجوع", callback_data="services")
+            ]])
+        )
+        return
+
+    btns = [[InlineKeyboardButton(s["name_ar"] if lang == "ar" else s["name_en"], callback_data=f"svc_{s['id']}")] for s in filtered]
+    btns.append([InlineKeyboardButton("🔙 رجوع", callback_data="services")])
+    await q.edit_message_text(
+        "📺 *اشتراكات رقمية*\n\nاختر الخدمة:",
+        reply_markup=InlineKeyboardMarkup(btns),
+        parse_mode="Markdown"
+    )
 
 
 async def cb_service_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1722,8 +1772,9 @@ def register_handlers(app: Application):
     # Callbacks المستخدم
     app.add_handler(CallbackQueryHandler(cb_main_menu,      pattern="^main_menu$"))
     app.add_handler(CallbackQueryHandler(cb_set_lang,       pattern="^lang_(ar|en)$"))
-    app.add_handler(CallbackQueryHandler(cb_services,       pattern="^services$"))
-    app.add_handler(CallbackQueryHandler(cb_service_detail, pattern=r"^svc_\d+$"))
+    app.add_handler(CallbackQueryHandler(cb_services,          pattern="^services$"))
+    app.add_handler(CallbackQueryHandler(cb_services_category, pattern="^svccat_"))
+    app.add_handler(CallbackQueryHandler(cb_service_detail,    pattern=r"^svc_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_variant_detail,       pattern=r"^variant_\d+$"))
     app.add_handler(CallbackQueryHandler(cb_recharge_amount,       pattern=r"^rchamt_"))
     app.add_handler(CallbackQueryHandler(cb_recharge_custom_amount,pattern=r"^rchamtcustom_"))
