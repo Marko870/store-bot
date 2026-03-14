@@ -68,7 +68,8 @@ async def cmd_admin(update: Update, context: ContextTypes.DEFAULT_TYPE):
          InlineKeyboardButton("👥 المستخدمون",    callback_data="wiz_users")],
         [InlineKeyboardButton("📊 الإحصائيات",    callback_data="wiz_stats"),
          InlineKeyboardButton("🎫 التذاكر",        callback_data="wiz_tickets")],
-        [InlineKeyboardButton("📢 إذاعة",          callback_data="wiz_broadcast")],
+        [InlineKeyboardButton("💱 أسعار الصرافة",  callback_data="wiz_exc_rates"),
+         InlineKeyboardButton("📢 إذاعة",          callback_data="wiz_broadcast")],
     ])
     if update.message:
         await update.message.reply_text(text, parse_mode="Markdown", reply_markup=kb)
@@ -2115,6 +2116,85 @@ async def cb_ticket_reopen(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q.data = f"tktdetail_{tkt_id}"
     return await cb_ticket_detail(update, context)
 
+
+# ══════════════════════════════════════════════════════
+#   إعدادات تصريف العملات — Admin Exchange Rates
+# ══════════════════════════════════════════════════════
+
+EXC_RATE_KEYS = {
+    "buy_normal":    ("buy",  "normal",    "شراء USDT — عادي"),
+    "buy_syriatel":  ("buy",  "syriatel",  "شراء USDT — سيرياتيل"),
+    "sell_normal":   ("sell", "normal",    "بيع USDT — عادي"),
+    "sell_syriatel": ("sell", "syriatel",  "بيع USDT — سيرياتيل"),
+}
+
+(EXC_PICK, EXC_VALUE) = range(150, 152)
+
+
+async def wiz_exchange_rates_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    rates = db.get_exchange_rates_all()
+
+    lines = ["💱 *أسعار تصريف العملات*\n"]
+    for key, (op, method, label) in EXC_RATE_KEYS.items():
+        lines.append(f"• {label}: `{rates.get(key, 0):,.0f}` ل.س")
+
+    kbd = []
+    for key, (op, method, label) in EXC_RATE_KEYS.items():
+        kbd.append([InlineKeyboardButton(f"✏️ {label}", callback_data=f"excrate_{key}")])
+    kbd.append([InlineKeyboardButton("🔙 رجوع", callback_data="admin_back")])
+
+    await q.edit_message_text(
+        "\n".join(lines),
+        reply_markup=InlineKeyboardMarkup(kbd),
+        parse_mode="Markdown"
+    )
+    return EXC_PICK
+
+
+async def exc_pick_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    q = update.callback_query
+    await q.answer()
+    key = q.data.replace("excrate_", "")
+    context.user_data["exc_rate_key"] = key
+    label = EXC_RATE_KEYS[key][2]
+    rates = db.get_exchange_rates_all()
+    current = rates.get(key, 0)
+
+    kbd = [[InlineKeyboardButton("🔙 رجوع", callback_data="wiz_exc_rates")]]
+    await q.edit_message_text(
+        f"✏️ *{label}*\nالسعر الحالي: `{current:,.0f}` ل.س\n\nأرسل السعر الجديد بالليرة:",
+        reply_markup=InlineKeyboardMarkup(kbd),
+        parse_mode="Markdown"
+    )
+    return EXC_VALUE
+
+
+async def exc_set_rate(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip().replace(",", "")
+    key  = context.user_data.get("exc_rate_key")
+
+    try:
+        rate = float(text)
+    except Exception:
+        await update.message.reply_text("❌ أرسل رقماً صحيحاً مثل: 14500")
+        return EXC_VALUE
+
+    op, method, label = EXC_RATE_KEYS[key]
+    db.set_exchange_rate(op, method, rate)
+    await update.message.reply_text(f"✅ تم تحديث {label} إلى `{rate:,.0f}` ل.س", parse_mode="Markdown")
+
+    # نعود للقائمة
+    class _FakeQuery:
+        async def answer(self): pass
+        async def edit_message_text(self, *a, **kw):
+            await update.message.reply_text(*a, **kw)
+        data = "wiz_exc_rates"
+
+    update.callback_query = _FakeQuery()
+    return await wiz_exchange_rates_start(update, context)
+
 def get_wizard_handlers():
     CANCEL = [CallbackQueryHandler(wizard_cancel, pattern="^wizard_cancel$")]
 
@@ -2314,6 +2394,19 @@ def get_wizard_handlers():
                 TKT_REPLY: [
                     MessageHandler(filters.TEXT & ~filters.COMMAND, cb_ticket_reply_send),
                     CallbackQueryHandler(cb_ticket_detail,     pattern="^tktdetail_"),
+                ],
+            }, fallbacks=CANCEL, per_message=False, allow_reentry=True),
+
+        ConversationHandler(
+            entry_points=[CallbackQueryHandler(wiz_exchange_rates_start, pattern="^wiz_exc_rates$")],
+            states={
+                EXC_PICK: [
+                    CallbackQueryHandler(exc_pick_rate,              pattern="^excrate_"),
+                    CallbackQueryHandler(wiz_exchange_rates_start,   pattern="^wiz_exc_rates$"),
+                ],
+                EXC_VALUE: [
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, exc_set_rate),
+                    CallbackQueryHandler(wiz_exchange_rates_start,   pattern="^wiz_exc_rates$"),
                 ],
             }, fallbacks=CANCEL, per_message=False, allow_reentry=True),
     ]
