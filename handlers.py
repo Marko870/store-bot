@@ -19,10 +19,13 @@ db  = Database()
 cfg = Config()
 
 # ══ حالات الانتظار ══
-AWAITING_PROOF   = "awaiting_proof"
-AWAITING_SUPPORT = "awaiting_support"
-AWAITING_INPUT   = "awaiting_input"
-AWAITING_COUNTRY = "awaiting_country"
+AWAITING_PROOF    = "awaiting_proof"
+AWAITING_SUPPORT  = "awaiting_support"
+AWAITING_INPUT    = "awaiting_input"
+AWAITING_COUNTRY  = "awaiting_country"
+EXCHANGE_AMOUNT   = "exchange_amount"
+EXCHANGE_PHONE    = "exchange_phone"
+EXCHANGE_PROOF    = "exchange_proof"
 
 # ══ Validation ══
 def validate_email(email: str) -> bool:
@@ -93,9 +96,10 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🛒 الخدمات | Services",        callback_data="services"),
          InlineKeyboardButton("📋 اشتراكاتي | My Subs",       callback_data="my_subs")],
-        [InlineKeyboardButton("👤 ملفي | Profile",             callback_data="profile"),
+        [InlineKeyboardButton("💱 تصريف العملات | Exchange",  callback_data="exchange"),
          InlineKeyboardButton("📨 الدعم | Support",            callback_data="support")],
-        [InlineKeyboardButton("🌐 English" if lang=="ar" else "🌐 العربية",
+        [InlineKeyboardButton("👤 ملفي | Profile",             callback_data="profile"),
+         InlineKeyboardButton("🌐 English" if lang=="ar" else "🌐 العربية",
                               callback_data="lang_en" if lang=="ar" else "lang_ar")],
     ])
     text = t("welcome", lang, name=user.first_name)
@@ -876,6 +880,334 @@ async def handle_support_message(update: Update, context: ContextTypes.DEFAULT_T
     return True
 
 
+    db.clear_user_state(uid)
+    return True
+
+
+# ══════════════════════════════════════════
+#   تصريف العملات — Currency Exchange
+# ══════════════════════════════════════════
+
+METHOD_LABELS = {
+    "syriatel": "📱 سيرياتيل كاش",
+    "shamcash": "💳 شام كاش",
+    "hawala":   "🏦 حوالة",
+    "hand":     "🤝 يد بيد (اللاذقية)",
+}
+
+OP_LABELS = {
+    "buy":  "شراء USDT",
+    "sell": "بيع USDT",
+}
+
+
+async def cb_exchange_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يظهر خيار شراء أو بيع USDT"""
+    q = update.callback_query
+    await q.answer()
+    lang = get_lang(q.from_user.id)
+
+    rates = db.get_exchange_rates_all()
+    text = (
+        "💱 *تصريف العملات*\n\n"
+        f"📈 سعر شراء USDT:\n"
+        f"• عادي: `{rates['buy_normal']:,.0f}` ل.س\n"
+        f"• سيرياتيل: `{rates['buy_syriatel']:,.0f}` ل.س\n\n"
+        f"📉 سعر بيع USDT:\n"
+        f"• عادي: `{rates['sell_normal']:,.0f}` ل.س\n"
+        f"• سيرياتيل: `{rates['sell_syriatel']:,.0f}` ل.س\n\n"
+        f"الحد الأدنى: `5 USDT`"
+    )
+
+    kbd = InlineKeyboardMarkup([
+        [InlineKeyboardButton("🛒 شراء USDT",  callback_data="exc_op_buy"),
+         InlineKeyboardButton("💰 بيع USDT",   callback_data="exc_op_sell")],
+        [InlineKeyboardButton("🔙 رجوع", callback_data="main_menu")],
+    ])
+    await q.edit_message_text(text, reply_markup=kbd, parse_mode="Markdown")
+
+
+async def cb_exchange_op(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """يختار العملية (شراء/بيع) ثم يختار طريقة الدفع/الاستلام"""
+    q = update.callback_query
+    await q.answer()
+    op = q.data.replace("exc_op_", "")
+    context.user_data["exc_op"] = op
+
+    op_label = "ستدفع بـ" if op == "buy" else "ستستلم عبر"
+    text = f"💱 *{OP_LABELS[op]}*\n\nاختر طريقة {'الدفع' if op == 'buy' else 'الاستلام'}:"
+
+    kbd = InlineKeyboardMarkup([
+        [InlineKeyboardButton("📱 سيرياتيل كاش", callback_data="exc_method_syriatel")],
+        [InlineKeyboardButton("💳 شام كاش",       callback_data="exc_method_shamcash")],
+        [InlineKeyboardButton("🏦 حوالة",         callback_data="exc_method_hawala")],
+        [InlineKeyboardButton("🤝 يد بيد",        callback_data="exc_method_hand")],
+        [InlineKeyboardButton("🔙 رجوع",          callback_data="exchange")],
+    ])
+    await q.edit_message_text(text, reply_markup=kbd, parse_mode="Markdown")
+
+
+async def cb_exchange_method(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """بعد اختيار الطريقة"""
+    q = update.callback_query
+    await q.answer()
+    method = q.data.replace("exc_method_", "")
+    op     = context.user_data.get("exc_op", "buy")
+    context.user_data["exc_method"] = method
+
+    # يد بيد — رسالة مباشرة بدون flow
+    if method == "hand":
+        support = cfg.SUPPORT_USERNAME
+        text = (
+            f"🤝 *يد بيد — اللاذقية فقط*\n\n"
+            f"التسليم متاح في مدينة اللاذقية فقط.\n"
+            f"تواصل معنا مباشرة لترتيب الموعد والمكان:\n\n"
+            f"👤 {support}"
+        )
+        kbd = InlineKeyboardMarkup([
+            [InlineKeyboardButton("💬 تواصل معنا", url=f"https://t.me/{support.replace('@','')}")],
+            [InlineKeyboardButton("🔙 رجوع", callback_data="exchange")],
+        ])
+        await q.edit_message_text(text, reply_markup=kbd, parse_mode="Markdown")
+        return
+
+    # باقي الطرق — نطلب المبلغ
+    rates = db.get_exchange_rates_all()
+    rate_key = f"{op}_{'syriatel' if method == 'syriatel' else 'normal'}"
+    rate = rates.get(rate_key, 0)
+    context.user_data["exc_rate"] = rate
+
+    method_label = METHOD_LABELS[method]
+    op_label = OP_LABELS[op]
+
+    text = (
+        f"💱 *{op_label}* — {method_label}\n\n"
+        f"السعر: `{rate:,.0f}` ل.س لكل USDT\n\n"
+        f"أرسل المبلغ بـ USDT (الحد الأدنى 5):"
+    )
+    kbd = InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="main_menu")]])
+    await q.edit_message_text(text, reply_markup=kbd, parse_mode="Markdown")
+
+    db.set_user_state(q.from_user.id, EXCHANGE_AMOUNT)
+
+
+async def handle_exchange_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """معالجة نصوص flow الصرافة"""
+    uid   = update.effective_user.id
+    state = db.get_user_state(uid)
+
+    if state == EXCHANGE_AMOUNT:
+        text = update.message.text.strip().replace(",", "")
+        try:
+            amount = float(text)
+        except Exception:
+            await update.message.reply_text("❌ أرسل رقماً صحيحاً مثل: 10")
+            return True
+
+        if amount < 5:
+            await update.message.reply_text("❌ الحد الأدنى 5 USDT")
+            return True
+
+        op     = context.user_data.get("exc_op", "buy")
+        method = context.user_data.get("exc_method", "shamcash")
+        rate   = context.user_data.get("exc_rate", 0)
+        amount_syp = amount * rate
+
+        context.user_data["exc_amount"] = amount
+        context.user_data["exc_syp"]    = amount_syp
+
+        op_label     = OP_LABELS[op]
+        method_label = METHOD_LABELS[method]
+        pay_recv     = "ستدفع" if op == "buy" else "ستستلم"
+
+        text = (
+            f"💱 *تأكيد العملية*\n\n"
+            f"📋 {op_label}\n"
+            f"💵 المبلغ: `{amount} USDT`\n"
+            f"💴 {pay_recv}: `{amount_syp:,.0f}` ل.س\n"
+            f"📲 الطريقة: {method_label}\n\n"
+            f"أرسل رقم {'هاتف سيرياتيل كاش' if method == 'syriatel' else 'حسابك أو رقم الهاتف'}:"
+        )
+        kbd = InlineKeyboardMarkup([[InlineKeyboardButton("❌ إلغاء", callback_data="main_menu")]])
+        await update.message.reply_text(text, reply_markup=kbd, parse_mode="Markdown")
+        db.set_user_state(uid, EXCHANGE_PHONE)
+        return True
+
+    if state == EXCHANGE_PHONE:
+        phone = update.message.text.strip()
+        context.user_data["exc_phone"] = phone
+
+        op     = context.user_data.get("exc_op", "buy")
+        method = context.user_data.get("exc_method", "shamcash")
+        amount = context.user_data.get("exc_amount", 0)
+        amount_syp = context.user_data.get("exc_syp", 0)
+        rate   = context.user_data.get("exc_rate", 0)
+
+        # إنشاء الطلب
+        order_id = db.create_currency_order(
+            user_id=uid, op=op,
+            amount_usdt=amount, amount_syp=amount_syp,
+            method=method, rate=rate, phone=phone
+        )
+        context.user_data["exc_order_id"] = order_id
+
+        op_label     = OP_LABELS[op]
+        method_label = METHOD_LABELS[method]
+
+        if op == "buy":
+            # المستخدم يدفع ليرة ويستلم USDT — يرسل إشعار دفع
+            text = (
+                f"✅ *تم إنشاء طلبك #{order_id}*\n\n"
+                f"لإتمام العملية أرسل {amount_syp:,.0f} ل.س عبر {method_label}\n"
+                f"ثم أرسل صورة إشعار الدفع هنا."
+            )
+            await update.message.reply_text(text, parse_mode="Markdown")
+            db.set_user_state(uid, EXCHANGE_PROOF)
+        else:
+            # المستخدم يبيع USDT — يحول USDT لعنوانا
+            usdt_addr = cfg.USDT_ADDRESS
+            text = (
+                f"✅ *تم إنشاء طلبك #{order_id}*\n\n"
+                f"حوّل `{amount} USDT` إلى العنوان التالي:\n"
+                f"`{usdt_addr}`\n"
+                f"الشبكة: ERC20\n\n"
+                f"ثم أرسل صورة إشعار التحويل هنا."
+            )
+            await update.message.reply_text(text, parse_mode="Markdown")
+            db.set_user_state(uid, EXCHANGE_PROOF)
+
+        return True
+
+    return False
+
+
+async def handle_exchange_proof(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """استلام صورة إشعار الصرافة"""
+    uid   = update.effective_user.id
+    state = db.get_user_state(uid)
+
+    if state != EXCHANGE_PROOF:
+        return False
+    if not (update.message.photo or update.message.document):
+        return False
+
+    order_id   = context.user_data.get("exc_order_id")
+    order      = db.get_currency_order(order_id)
+    if not order:
+        return False
+
+    op_label     = OP_LABELS[order["op"]]
+    method_label = METHOD_LABELS.get(order["method"], order["method"])
+    user         = db.get_user(uid)
+    username     = f"@{user['username']}" if user.get("username") else "—"
+
+    await update.message.reply_text("✅ تم استلام الإشعار! سيتم مراجعته وتنفيذ الطلب قريباً.")
+
+    # إشعار الأدمن
+    caption = (
+        f"💱 *طلب صرافة جديد #{order_id}*\n\n"
+        f"👤 {user.get('full_name','—')} | {username}\n"
+        f"🆔 `{uid}`\n"
+        f"📋 {op_label}\n"
+        f"💵 {order['amount_usdt']} USDT\n"
+        f"💴 {order['amount_syp']:,.0f} ل.س\n"
+        f"📲 {method_label}\n"
+        f"📞 {order['phone']}"
+    )
+    kbd = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ تم التنفيذ", callback_data=f"exc_done_{order_id}"),
+        InlineKeyboardButton("❌ رفض",        callback_data=f"exc_reject_{order_id}"),
+    ]])
+
+    for admin_id in cfg.ADMIN_IDS:
+        try:
+            if update.message.photo:
+                await context.bot.send_photo(
+                    chat_id=admin_id,
+                    photo=update.message.photo[-1].file_id,
+                    caption=caption,
+                    parse_mode="Markdown",
+                    reply_markup=kbd
+                )
+            else:
+                await context.bot.send_document(
+                    chat_id=admin_id,
+                    document=update.message.document.file_id,
+                    caption=caption,
+                    parse_mode="Markdown",
+                    reply_markup=kbd
+                )
+        except Exception as e:
+            logger.error(f"Exchange notify failed: {e}")
+
+    db.clear_user_state(uid)
+    return True
+
+
+async def cb_exchange_done(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """الأدمن يقبل طلب الصرافة"""
+    q = update.callback_query
+    if not is_admin(q.from_user.id):
+        await q.answer("❌ غير مصرح")
+        return
+    order_id = int(q.data.replace("exc_done_", ""))
+    order    = db.get_currency_order(order_id)
+    if not order:
+        await q.answer("❌ الطلب غير موجود")
+        return
+
+    db.complete_currency_order(order_id)
+    await q.answer("✅ تم التنفيذ", show_alert=True)
+    await q.edit_message_reply_markup(reply_markup=None)
+
+    op_label     = OP_LABELS[order["op"]]
+    method_label = METHOD_LABELS.get(order["method"], order["method"])
+
+    try:
+        await context.bot.send_message(
+            chat_id=order["user_id"],
+            text=(
+                f"✅ *تم تنفيذ طلبك #{order_id}*\n\n"
+                f"📋 {op_label}\n"
+                f"💵 {order['amount_usdt']} USDT\n"
+                f"📲 {method_label}\n\n"
+                f"شكراً لثقتك بنا! 🙏"
+            ),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Exchange done notify failed: {e}")
+
+
+async def cb_exchange_reject(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """الأدمن يرفض طلب الصرافة"""
+    q = update.callback_query
+    if not is_admin(q.from_user.id):
+        await q.answer("❌ غير مصرح")
+        return
+    order_id = int(q.data.replace("exc_reject_", ""))
+    order    = db.get_currency_order(order_id)
+    if not order:
+        await q.answer("❌ الطلب غير موجود")
+        return
+
+    db.reject_currency_order(order_id)
+    await q.answer("❌ تم الرفض", show_alert=True)
+    await q.edit_message_reply_markup(reply_markup=None)
+
+    try:
+        await context.bot.send_message(
+            chat_id=order["user_id"],
+            text=(
+                f"❌ *تم رفض طلبك #{order_id}*\n\n"
+                f"للاستفسار تواصل مع الدعم: {cfg.SUPPORT_USERNAME}"
+            ),
+            parse_mode="Markdown"
+        )
+    except Exception as e:
+        logger.error(f"Exchange reject notify failed: {e}")
+
+
 async def cb_reply_ticket(update: Update, context: ContextTypes.DEFAULT_TYPE):
     q = update.callback_query; await q.answer()
     if not is_admin(q.from_user.id): return
@@ -942,6 +1274,8 @@ async def handle_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     # ١. إثبات دفع (صورة أو ملف)
     if update.message.photo or update.message.document:
+        if await handle_exchange_proof(update, context):
+            return
         if await handle_recharge_proof(update, context):
             return
         if await handle_payment_proof(update, context):
@@ -992,6 +1326,10 @@ async def handle_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # ٣. نصوص التعبئة
     if await handle_recharge_text(update, context):
         logger.info(f"[DEBUG] uid={uid} handled by handle_recharge_text")
+        return
+
+    # ٣ب. نصوص الصرافة
+    if await handle_exchange_text(update, context):
         return
 
     # ٤. رسالة دعم — قبل handle_input_response لأن state DB قد يتعارض
@@ -1403,6 +1741,12 @@ def register_handlers(app: Application):
     app.add_handler(CallbackQueryHandler(cb_profile,          pattern="^profile$"))
     app.add_handler(CallbackQueryHandler(cb_recharge_history, pattern="^recharge_history$"))
     app.add_handler(CallbackQueryHandler(cb_support,        pattern="^support$"))
+    # تصريف العملات
+    app.add_handler(CallbackQueryHandler(cb_exchange_start,  pattern="^exchange$"))
+    app.add_handler(CallbackQueryHandler(cb_exchange_op,     pattern="^exc_op_"))
+    app.add_handler(CallbackQueryHandler(cb_exchange_method, pattern="^exc_method_"))
+    app.add_handler(CallbackQueryHandler(cb_exchange_done,   pattern="^exc_done_"))
+    app.add_handler(CallbackQueryHandler(cb_exchange_reject, pattern="^exc_reject_"))
     app.add_handler(CallbackQueryHandler(cb_reply_ticket,   pattern=r"^replyticket_\d+_\d+$"))
 
 
