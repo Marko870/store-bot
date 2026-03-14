@@ -96,10 +96,9 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kb = InlineKeyboardMarkup([
         [InlineKeyboardButton("🛒 الخدمات | Services",        callback_data="services"),
          InlineKeyboardButton("📋 اشتراكاتي | My Subs",       callback_data="my_subs")],
-        [InlineKeyboardButton("💱 تصريف العملات | Exchange",  callback_data="exchange"),
-         InlineKeyboardButton("📨 الدعم | Support",            callback_data="support")],
         [InlineKeyboardButton("👤 ملفي | Profile",             callback_data="profile"),
-         InlineKeyboardButton("🌐 English" if lang=="ar" else "🌐 العربية",
+         InlineKeyboardButton("📨 الدعم | Support",            callback_data="support")],
+        [InlineKeyboardButton("🌐 English" if lang=="ar" else "🌐 العربية",
                               callback_data="lang_en" if lang=="ar" else "lang_ar")],
     ])
     text = t("welcome", lang, name=user.first_name)
@@ -164,6 +163,12 @@ async def cb_service_detail(update: Update, context: ContextTypes.DEFAULT_TYPE):
     # خدمة التعبئة — flow خاص
     if type_name == "recharge":
         await cb_recharge_start(update, context)
+        return
+
+    # خدمة تصريف العملات — flow خاص
+    if type_name == "exchange":
+        context.user_data["exc_svc_id"] = svc_id
+        await cb_exchange_start(update, context)
         return
 
     name = svc["name_ar"] if lang == "ar" else svc["name_en"]
@@ -1779,4 +1784,3 @@ def register_handlers(app: Application):
 async def _cmd_admin_shortcut(update: Update, context: ContextTypes.DEFAULT_TYPE):
     from admin_wizard import cmd_admin
     await cmd_admin(update, context)
-
