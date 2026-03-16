@@ -18,7 +18,11 @@ class Database:
 
     @contextmanager
     def conn(self):
-        c = psycopg2.connect(cfg.DATABASE_URL)
+        c = psycopg2.connect(
+            cfg.DATABASE_URL,
+            connect_timeout=10,          # timeout للاتصال
+            options="-c statement_timeout=30000"  # 30 ثانية max لأي query
+        )
         c.autocommit = False
         try:
             yield c
@@ -529,10 +533,13 @@ class Database:
         """, (name_ar, name_en, desc_ar, desc_en, category, type_id, min_amount))
 
     def update_service_field(self, sid, field, value):
+        # Whitelist صارمة — يمنع SQL Injection
         allowed = {"name_ar", "name_en", "description_ar", "description_en", "category", "min_amount"}
         if field not in allowed:
-            return
-        self.execute(f"UPDATE services SET {field}=%s WHERE id=%s", (value, sid))
+            raise ValueError(f"Invalid field: {field}")
+        # field من whitelist فقط — آمن للاستخدام في اسم العمود
+        col = field  # noqa: S608
+        self.execute(f"UPDATE services SET {col}=%s WHERE id=%s", (value, sid))
 
     def toggle_service(self, sid, active):
         self.execute("UPDATE services SET is_active=%s WHERE id=%s", (active, sid))
@@ -571,8 +578,9 @@ class Database:
     def update_plan_field(self, pid, field, value):
         allowed = {"name_ar", "name_en", "duration_days", "price"}
         if field not in allowed:
-            return
-        self.execute(f"UPDATE plans SET {field}=%s WHERE id=%s", (value, pid))
+            raise ValueError(f"Invalid field: {field}")
+        col = field  # noqa: S608
+        self.execute(f"UPDATE plans SET {col}=%s WHERE id=%s", (value, pid))
 
     def get_plan_options(self, pid):
         r = self.fetchone("SELECT extra_options FROM plans WHERE id=%s", (pid,))
@@ -1118,5 +1126,6 @@ class Database:
             "new_users": new_users["c"] if new_users else 0,
             "new_subs":  new_subs["c"] if new_subs else 0,
         }
+
 
 
