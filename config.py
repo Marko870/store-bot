@@ -11,3 +11,4 @@ class Config:
     USDT_NETWORK     = os.getenv("USDT_NETWORK", "ERC20")
     SUPPORT_USERNAME = os.getenv("SUPPORT_USERNAME", "@ARTIZILLO")
     BOT_NAME         = "🛍️ Nova Plus"
+    MAINTENANCE_MODE = os.getenv("MAINTENANCE_MODE", "false").lower() == "true"
