@@ -544,11 +544,12 @@ async def cb_checkout(update: Update, context: ContextTypes.DEFAULT_TYPE):
         plan["price"], user_options, user_inputs
     )
     context.user_data["last_order_id"] = order_id
-    log_new_order(q.from_user.id, order_id, plan_name, plan["price"])
+    
 
     svc_name  = plan["service_name_ar"] if lang == "ar" else plan["service_name_en"]
     plan_name = plan["name_ar"] if lang == "ar" else plan["name_en"]
-
+    log_new_order(q.from_user.id, order_id, plan_name, plan["price"])
+    
     text = t("payment_details", lang,
              service=svc_name, plan=plan_name,
              amount=plan["price"], network=cfg.USDT_NETWORK,
