@@ -58,14 +58,20 @@ async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def set_commands(app: Application):
+    # المستخدمون العاديون — /start فقط
     user_cmds = [
+        BotCommand("start", "🏠 القائمة الرئيسية"),
+    ]
+    await app.bot.set_my_commands(user_cmds, scope=BotCommandScopeDefault())
+
+    # الأدمن — /start و /admin
+    admin_cmds = [
         BotCommand("start", "🏠 القائمة الرئيسية"),
         BotCommand("admin", "⚙️ لوحة الإدارة"),
     ]
-    await app.bot.set_my_commands(user_cmds, scope=BotCommandScopeDefault())
     for aid in cfg.ADMIN_IDS:
         try:
-            await app.bot.set_my_commands(user_cmds, scope=BotCommandScopeChat(chat_id=aid))
+            await app.bot.set_my_commands(admin_cmds, scope=BotCommandScopeChat(chat_id=aid))
         except Exception as e:
             bot_log.warning(f"Could not set admin commands for {aid}: {e}")
     bot_log.info("✅ Commands set")
