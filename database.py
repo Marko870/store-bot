@@ -77,6 +77,10 @@ class Database:
                     ALTER TABLE users ADD COLUMN IF NOT EXISTS flow TEXT DEFAULT NULL;
                 EXCEPTION WHEN duplicate_column THEN NULL;
                 END $$;
+                DO $$ BEGIN
+                    ALTER TABLE users ADD COLUMN IF NOT EXISTS country TEXT DEFAULT '';
+                EXCEPTION WHEN duplicate_column THEN NULL;
+                END $$;
 
                 CREATE TABLE IF NOT EXISTS service_types (
                     id          SERIAL PRIMARY KEY,
@@ -748,13 +752,17 @@ class Database:
         """, (uid,))
 
     def get_all_subscriptions(self, uid):
+        """يجيب اشتراكات الخدمات الرقمية فقط (subscription type)"""
         return self.fetch("""
             SELECT sub.*, p.name_ar as plan_name, p.duration_days,
                    s.name_ar as service_ar
             FROM subscriptions sub
             JOIN plans p ON sub.plan_id = p.id
             JOIN services s ON sub.service_id = s.id
-            WHERE sub.user_id=%s ORDER BY sub.started_at DESC
+            JOIN service_types st ON s.type_id = st.id
+            WHERE sub.user_id=%s
+              AND st.name = 'subscription'
+            ORDER BY sub.started_at DESC
         """, (uid,))
 
     def get_subscriptions_admin(self, status="all", page=0, per_page=5, search=""):
@@ -1110,4 +1118,5 @@ class Database:
             "new_users": new_users["c"] if new_users else 0,
             "new_subs":  new_subs["c"] if new_subs else 0,
         }
+
 
