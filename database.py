@@ -138,10 +138,15 @@ class Database:
                     name_en       TEXT NOT NULL,
                     duration_days INTEGER DEFAULT 0,
                     price         REAL NOT NULL,
+                    price_syp     REAL DEFAULT 0,
                     features      TEXT DEFAULT '[]',
                     extra_options TEXT DEFAULT '[]',
                     is_active     INTEGER DEFAULT 1
                 );
+                DO $$ BEGIN
+                    ALTER TABLE plans ADD COLUMN IF NOT EXISTS price_syp REAL DEFAULT 0;
+                EXCEPTION WHEN duplicate_column THEN NULL;
+                END $$;
 
                 CREATE TABLE IF NOT EXISTS exchange_rates (
                     id         SERIAL PRIMARY KEY,
@@ -565,18 +570,18 @@ class Database:
             WHERE p.id=%s
         """, (pid,))
 
-    def add_plan_full(self, svc_id, name_ar, name_en, days, price, features=None, options=None, variant_id=None):
+    def add_plan_full(self, svc_id, name_ar, name_en, days, price, features=None, options=None, variant_id=None, price_syp=0):
         self.execute("""
-            INSERT INTO plans (service_id, variant_id, name_ar, name_en, duration_days, price, features, extra_options)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        """, (svc_id, variant_id, name_ar, name_en, days, price,
+            INSERT INTO plans (service_id, variant_id, name_ar, name_en, duration_days, price, price_syp, features, extra_options)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+        """, (svc_id, variant_id, name_ar, name_en, days, price, price_syp or 0,
               json.dumps(features or []), json.dumps(options or [])))
 
     def update_plan_options(self, pid, options):
         self.execute("UPDATE plans SET extra_options=%s WHERE id=%s", (json.dumps(options), pid))
 
     def update_plan_field(self, pid, field, value):
-        allowed = {"name_ar", "name_en", "duration_days", "price"}
+        allowed = {"name_ar", "name_en", "duration_days", "price", "price_syp"}
         if field not in allowed:
             raise ValueError(f"Invalid field: {field}")
         col = field  # noqa: S608
@@ -1126,6 +1131,5 @@ class Database:
             "new_users": new_users["c"] if new_users else 0,
             "new_subs":  new_subs["c"] if new_subs else 0,
         }
-
 
 
