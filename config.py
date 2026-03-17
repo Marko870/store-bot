@@ -16,9 +16,9 @@ class Config:
     # ══ قنوات الإشعارات ══════════════════════════════
     # أضف ID القناة في Railway Variables
     # لو فارغ — الإشعار يروح للأدمن مباشرة كالمعتاد
-    CHANNEL_SUBSCRIPTIONS = os.getenv("CHANNEL_SUBSCRIPTIONS", "")  # قناة طلبات الاشتراكات
-    CHANNEL_RECHARGE      = os.getenv("CHANNEL_RECHARGE", "")       # قناة طلبات التعبئة
-    CHANNEL_EXCHANGE      = os.getenv("CHANNEL_EXCHANGE", "")       # قناة طلبات الصرافة
-    CHANNEL_SUPPORT       = os.getenv("CHANNEL_SUPPORT", "")        # قناة تذاكر الدعم
+    CHANNEL_SUBSCRIPTIONS = os.getenv("CHANNEL_SUBSCRIPTIONS", "")  # مجموعة طلبات الاشتراكات
+    CHANNEL_RECHARGE      = os.getenv("CHANNEL_RECHARGE", "")       # مجموعة طلبات التعبئة
+    CHANNEL_EXCHANGE      = os.getenv("CHANNEL_EXCHANGE", "")       # مجموعة طلبات الصرافة
+    CHANNEL_SUPPORT       = os.getenv("CHANNEL_SUPPORT", "")        # مجموعة تذاكر الدعم
     SHAMCASH_ADDRESS    = os.getenv("SHAMCASH_ADDRESS", "")
     SHAMCASH_NAME       = os.getenv("SHAMCASH_NAME", "")  # اسم صاحب المحفظة
