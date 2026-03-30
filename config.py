@@ -21,4 +21,6 @@ class Config:
     CHANNEL_EXCHANGE      = os.getenv("CHANNEL_EXCHANGE", "")       # مجموعة طلبات الصرافة
     CHANNEL_SUPPORT       = os.getenv("CHANNEL_SUPPORT", "")        # مجموعة تذاكر الدعم
     SHAMCASH_ADDRESS    = os.getenv("SHAMCASH_ADDRESS", "")
-    SHAMCASH_NAME       = os.getenv("SHAMCASH_NAME", "")  # اسم صاحب المحفظة
+    SHAMCASH_NAME       = os.getenv("SHAMCASH_NAME", "")  # اسم 
+    APISYRIA_KEY  = os.getenv("APISYRIA_KEY", "")
+    SYRIATEL_GSM  = os.getenv("SYRIATEL_GSM", "")
